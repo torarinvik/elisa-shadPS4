@@ -7,7 +7,10 @@ extern shadps4_elisa_probe_value() -> i64
 @test
 def shadps4_c_api_probe_value_round_trips() -> void can[Abort.Panic]:
     can Abort.Panic:
-        if shadps4_elisa_probe_value() != 4242:
+        probe_value: mutable i64 = 0
+        trusted Unsafe.RawExtern:
+            probe_value <- shadps4_elisa_probe_value()
+        if probe_value != 4242:
             panic("expected shadPS4 C API probe value")
 
 
@@ -33,6 +36,28 @@ def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
             panic("expected no htile metadata reads")
         if summary.unknown_metadata_read_count != 0:
             panic("expected no unknown metadata reads")
+        if summary.metadata_register_count != 1:
+            panic("expected one metadata register")
+        if summary.image_binding_texture_count != 1:
+            panic("expected one texture image binding")
+        if summary.image_binding_storage_count != 0:
+            panic("expected no storage image bindings")
+        if summary.image_binding_videoout_storage_count != 0:
+            panic("expected no videoout storage image bindings")
+        if summary.last_image_binding_id != 5:
+            panic("expected last image binding id")
+        if summary.last_image_binding_index != 0:
+            panic("expected last image binding index")
+        if summary.last_image_binding_stage != 1:
+            panic("expected last image binding stage")
+        if summary.last_image_binding_addr != 0x281120000:
+            panic("expected last image binding address")
+        if summary.last_image_binding_format_kind != render_format_rgba8_unorm():
+            panic("expected last image binding format")
+        if summary.last_image_binding_samples != 1:
+            panic("expected last image binding samples")
+        if summary.last_image_binding_bits != 32:
+            panic("expected last image binding bits")
         if summary.last_videoout_stage != 18:
             panic("expected videoout stage 18")
         if summary.last_render_pass != 2160:
@@ -49,6 +74,26 @@ def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
             panic("expected metadata read address")
         if summary.last_metadata_read_kind != metadata_kind_fmask():
             panic("expected fmask metadata kind")
+        if summary.last_render_samples != 4:
+            panic("expected render sample count")
+        if summary.last_depth_samples != 4:
+            panic("expected depth sample count")
+        if summary.last_render_bits != 32:
+            panic("expected render bit depth")
+        if summary.last_depth_bits != 32:
+            panic("expected depth bit depth")
+        if summary.last_render_format_kind != render_format_b10g11r11():
+            panic("expected render format kind")
+        if summary.last_depth_format_kind != render_format_d32s8():
+            panic("expected depth format kind")
+        if summary.last_compute_shader != 0xc455a5aa2c447041:
+            panic("expected compute shader hash")
+        if summary.last_vertex_shader != 0x1198feb92f4085c4:
+            panic("expected vertex shader hash")
+        if summary.last_compute_pipeline != 0xa2ca58b5abbba0fc:
+            panic("expected compute pipeline hash")
+        if summary.last_graphics_pipeline != 0x8274a52bcc15679:
+            panic("expected graphics pipeline hash")
         if summary.metadata_read_hits_last_fmask_count != 1:
             panic("expected metadata read to hit last fmask")
         if summary.metadata_read_hits_last_cmask_count != 0:
@@ -57,6 +102,32 @@ def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
             panic("expected metadata read to miss last htile")
         if summary.fmask_cmask_alias_count != 0:
             panic("expected no fmask/cmask alias in fixture")
+        if summary.suspicious_score != 0:
+            panic("expected no suspicious score in baseline fixture")
+
+
+@test
+def ufc_trace_parser_marks_black_screen_adjacent_suspicion() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: RenderCheckpoint = ufc_trace_analyze_text(UFC_TRACE_SUSPICIOUS_FIXTURE)
+        if summary.render_target_count != 1:
+            panic("expected one suspicious render target")
+        if summary.fmask_cmask_alias_count != 1:
+            panic("expected aliased fmask/cmask")
+        if summary.fmask_decompress_missing_mrt1_count != 1:
+            panic("expected missing mrt1 decompress")
+        if summary.compositor_null_layer_count != 1:
+            panic("expected compositor null layer")
+        if summary.image_binding_null_count != 1:
+            panic("expected null image binding")
+        if summary.null_metadata_action_count != 1:
+            panic("expected null metadata action")
+        if summary.metadata_read_hits_last_fmask_count != 1:
+            panic("expected null metadata read to hit fmask")
+        if summary.first_suspicious_pass != 3000:
+            panic("expected first suspicious pass")
+        if summary.suspicious_score < 5:
+            panic("expected multiple suspicious signals")
 
 
 @test
@@ -64,6 +135,8 @@ def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
     can Abort.Panic:
         if baseline_safe_profile().name != "baseline-safe":
             panic("expected baseline profile name")
+        if existing_log_profile().name != "existing-log":
+            panic("expected existing-log profile name")
         if fmask_null_read_profile().name != "fmask-null-read":
             panic("expected fmask null-read profile name")
         if fmask_in_place_profile().name != "fmask-in-place":
@@ -74,8 +147,12 @@ def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
             panic("expected videoout unorm profile name")
         if baseline_safe_profile().timeout_ms != 8000:
             panic("expected baseline timeout")
+        if existing_log_profile().timeout_ms != 0:
+            panic("expected existing-log timeout")
         if baseline_safe_profile().null_fmask_reads or baseline_safe_profile().fmask_decompress_in_place or baseline_safe_profile().compositor_null_layer or baseline_safe_profile().videoout_unorm:
             panic("expected baseline to have no experiment toggles")
+        if existing_log_profile().null_fmask_reads or existing_log_profile().fmask_decompress_in_place or existing_log_profile().compositor_null_layer or existing_log_profile().videoout_unorm:
+            panic("expected existing-log to have no experiment toggles")
         if fmask_null_read_profile().timeout_ms != 8000:
             panic("expected fmask null-read timeout")
         if not fmask_null_read_profile().null_fmask_reads:

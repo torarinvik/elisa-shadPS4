@@ -65,6 +65,13 @@ struct RenderCheckpoint:
     cmask_texture_read_count: mutable i64
     htile_texture_read_count: mutable i64
     unknown_metadata_read_count: mutable i64
+    metadata_register_count: mutable i64
+    image_binding_null_count: mutable i64
+    image_binding_texture_count: mutable i64
+    image_binding_storage_count: mutable i64
+    image_binding_videoout_storage_count: mutable i64
+    compositor_null_layer_count: mutable i64
+    fmask_decompress_missing_mrt1_count: mutable i64
     null_metadata_action_count: mutable i64
     sample_metadata_action_count: mutable i64
     fmask_cmask_alias_count: mutable i64
@@ -76,6 +83,25 @@ struct RenderCheckpoint:
     last_htile_addr: mutable i64
     last_metadata_read_addr: mutable i64
     last_metadata_read_kind: mutable i64
+    last_render_samples: mutable i64
+    last_depth_samples: mutable i64
+    last_render_bits: mutable i64
+    last_depth_bits: mutable i64
+    last_render_format_kind: mutable i64
+    last_depth_format_kind: mutable i64
+    last_compute_shader: mutable i64
+    last_vertex_shader: mutable i64
+    last_graphics_pipeline: mutable i64
+    last_compute_pipeline: mutable i64
+    last_image_binding_id: mutable i64
+    last_image_binding_index: mutable i64
+    last_image_binding_stage: mutable i64
+    last_image_binding_addr: mutable i64
+    last_image_binding_bits: mutable i64
+    last_image_binding_samples: mutable i64
+    last_image_binding_format_kind: mutable i64
+    suspicious_score: mutable i64
+    first_suspicious_pass: mutable i64
 
 def metadata_kind_unknown() -> i64:
     return 0
@@ -89,11 +115,38 @@ def metadata_kind_cmask() -> i64:
 def metadata_kind_htile() -> i64:
     return 3
 
+def render_format_unknown() -> i64:
+    return 0
+
+def render_format_b10g11r11() -> i64:
+    return 1
+
+def render_format_d32s8() -> i64:
+    return 2
+
+def render_format_rgba8_unorm() -> i64:
+    return 3
+
+def render_format_rgba8_srgb() -> i64:
+    return 4
+
+def render_format_r16_sfloat() -> i64:
+    return 5
+
+def render_format_rg16_sfloat() -> i64:
+    return 6
+
+def render_format_r32_sfloat() -> i64:
+    return 7
+
 def ufc1_game_id() -> GameId:
     return GameId("CUSA00264")
 
 def baseline_safe_profile() -> TraceProfile:
     return TraceProfile("baseline-safe", 8000, false, false, false, false)
+
+def existing_log_profile() -> TraceProfile:
+    return TraceProfile("existing-log", 0, false, false, false, false)
 
 def fmask_null_read_profile() -> TraceProfile:
     return TraceProfile("fmask-null-read", 8000, true, false, false, false)
@@ -108,7 +161,15 @@ def videoout_unorm_profile() -> TraceProfile:
     return TraceProfile("videoout-unorm", 8000, false, false, false, true)
 
 def empty_checkpoint() -> RenderCheckpoint:
-    return RenderCheckpoint(0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, metadata_kind_unknown())
+    return RenderCheckpoint(
+        0, -1, -1, -1,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        -1, -1, -1, -1, metadata_kind_unknown(),
+        -1, -1, -1, -1, render_format_unknown(), render_format_unknown(),
+        -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, render_format_unknown(),
+        0, -1
+    )
 
 def trace_byte_at(text: cstr, index: i64) -> u8:
     trusted Unsafe.UncheckedIndex:
@@ -212,6 +273,28 @@ def trace_metadata_kind(text: cstr, start: i64, end: i64) -> i64:
         return metadata_kind_htile()
     return metadata_kind_unknown()
 
+def trace_render_format_kind(text: cstr, start: i64, end: i64) -> i64:
+    if trace_line_contains(text, start, end, "vk_format=B10G11R11UfloatPack32"):
+        return render_format_b10g11r11()
+    if trace_line_contains(text, start, end, "vk_format=D32SfloatS8Uint"):
+        return render_format_d32s8()
+    if trace_line_contains(text, start, end, "vk_format=R8G8B8A8Unorm"):
+        return render_format_rgba8_unorm()
+    if trace_line_contains(text, start, end, "vk_format=R8G8B8A8Srgb"):
+        return render_format_rgba8_srgb()
+    if trace_line_contains(text, start, end, "vk_format=R16Sfloat"):
+        return render_format_r16_sfloat()
+    if trace_line_contains(text, start, end, "vk_format=R16G16Sfloat"):
+        return render_format_rg16_sfloat()
+    if trace_line_contains(text, start, end, "vk_format=R32Sfloat"):
+        return render_format_r32_sfloat()
+    return render_format_unknown()
+
+def ufc_trace_mark_suspicious(summary: mutable RenderCheckpoint&, pass_index: i64) -> void:
+    summary.suspicious_score <- summary.suspicious_score + 1
+    if summary.first_suspicious_pass < 0:
+        summary.first_suspicious_pass <- pass_index
+
 def ufc_trace_record_metadata_read(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     kind: i64 = trace_metadata_kind(text, start, end)
     addr: i64 = trace_hex_after(text, start, end, "addr=", -1)
@@ -230,6 +313,7 @@ def ufc_trace_record_metadata_read(summary: mutable RenderCheckpoint&, text: cst
                 summary.unknown_metadata_read_count <- summary.unknown_metadata_read_count + 1
     if trace_line_contains(text, start, end, "action=null_descriptor") or trace_line_contains(text, start, end, "action=null_fmask_texture"):
         summary.null_metadata_action_count <- summary.null_metadata_action_count + 1
+        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
     if trace_line_contains(text, start, end, "action=sample_metadata"):
         summary.sample_metadata_action_count <- summary.sample_metadata_action_count + 1
     if addr != 0 and addr == summary.last_fmask_addr:
@@ -239,25 +323,76 @@ def ufc_trace_record_metadata_read(summary: mutable RenderCheckpoint&, text: cst
     if addr != 0 and addr == summary.last_htile_addr:
         summary.metadata_read_hits_last_htile_count <- summary.metadata_read_hits_last_htile_count + 1
 
+def ufc_trace_record_compile_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    if trace_line_contains(text, start, end, "Compiling cs shader"):
+        summary.last_compute_shader <- trace_hex_after(text, start, end, "shader ", summary.last_compute_shader)
+    if trace_line_contains(text, start, end, "Compiling vs shader"):
+        summary.last_vertex_shader <- trace_hex_after(text, start, end, "shader ", summary.last_vertex_shader)
+    if trace_line_contains(text, start, end, "Compiling graphics pipeline"):
+        summary.last_graphics_pipeline <- trace_hex_after(text, start, end, "pipeline ", summary.last_graphics_pipeline)
+    if trace_line_contains(text, start, end, "Compiling compute pipeline"):
+        summary.last_compute_pipeline <- trace_hex_after(text, start, end, "pipeline ", summary.last_compute_pipeline)
+
+def ufc_trace_record_image_binding(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    summary.image_binding_count <- summary.image_binding_count + 1
+    summary.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.last_videoout_stage)
+    summary.last_image_binding_id <- trace_decimal_after(text, start, end, "image_id=", summary.last_image_binding_id)
+    summary.last_image_binding_index <- trace_decimal_after(text, start, end, "binding_index=", summary.last_image_binding_index)
+    summary.last_image_binding_addr <- trace_hex_after(text, start, end, "guest_addr=", summary.last_image_binding_addr)
+    summary.last_image_binding_bits <- trace_decimal_after(text, start, end, "bits=", summary.last_image_binding_bits)
+    summary.last_image_binding_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "info_samples=", summary.last_image_binding_samples))
+    summary.last_image_binding_format_kind <- trace_render_format_kind(text, start, end)
+    if trace_line_contains(text, start, end, "descriptor=texture"):
+        summary.image_binding_texture_count <- summary.image_binding_texture_count + 1
+    if trace_line_contains(text, start, end, "descriptor=storage"):
+        summary.image_binding_storage_count <- summary.image_binding_storage_count + 1
+    if trace_line_contains(text, start, end, "stage=cs"):
+        summary.last_image_binding_stage <- 1
+    if trace_line_contains(text, start, end, "stage=vs"):
+        summary.last_image_binding_stage <- 2
+    if trace_line_contains(text, start, end, "stage=ps") or trace_line_contains(text, start, end, "stage=fs"):
+        summary.last_image_binding_stage <- 3
+    if trace_line_contains(text, start, end, "is_videoout_storage=true"):
+        summary.image_binding_videoout_storage_count <- summary.image_binding_videoout_storage_count + 1
+
 def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    ufc_trace_record_compile_line(summary, text, start, end)
     if not trace_line_contains(text, start, end, "TRACE_RENDER"):
         return
-    if trace_line_contains(text, start, end, "TRACE_RENDER image_binding"):
-        summary.image_binding_count <- summary.image_binding_count + 1
+    if trace_line_contains(text, start, end, "TRACE_RENDER metadata_register"):
+        summary.metadata_register_count <- summary.metadata_register_count + 1
+    if trace_line_contains(text, start, end, "TRACE_RENDER image_binding_null"):
+        summary.image_binding_null_count <- summary.image_binding_null_count + 1
         summary.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.last_videoout_stage)
+        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+    if trace_line_contains(text, start, end, "TRACE_RENDER compositor_null_layer"):
+        summary.compositor_null_layer_count <- summary.compositor_null_layer_count + 1
+        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+    if trace_line_contains(text, start, end, "TRACE_RENDER image_binding") and not trace_line_contains(text, start, end, "TRACE_RENDER image_binding_null"):
+        ufc_trace_record_image_binding(summary, text, start, end)
     if trace_line_contains(text, start, end, "TRACE_RENDER render_target"):
         summary.render_target_count <- summary.render_target_count + 1
         summary.last_render_pass <- trace_decimal_after(text, start, end, "pass=", summary.last_render_pass)
         summary.last_fmask_addr <- trace_hex_after(text, start, end, "fmask=", summary.last_fmask_addr)
         summary.last_cmask_addr <- trace_hex_after(text, start, end, "cmask=", summary.last_cmask_addr)
+        summary.last_render_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "info_samples=", summary.last_render_samples))
+        summary.last_render_bits <- trace_decimal_after(text, start, end, "bits=", summary.last_render_bits)
+        summary.last_render_format_kind <- trace_render_format_kind(text, start, end)
         if summary.last_fmask_addr != 0 and summary.last_fmask_addr == summary.last_cmask_addr:
             summary.fmask_cmask_alias_count <- summary.fmask_cmask_alias_count + 1
+            ufc_trace_mark_suspicious(summary, summary.last_render_pass)
     if trace_line_contains(text, start, end, "TRACE_RENDER depth_target"):
         summary.depth_target_count <- summary.depth_target_count + 1
         summary.last_depth_pass <- trace_decimal_after(text, start, end, "pass=", summary.last_depth_pass)
         summary.last_htile_addr <- trace_hex_after(text, start, end, "htile=", summary.last_htile_addr)
-    if trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress"):
+        summary.last_depth_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "samples=", summary.last_depth_samples))
+        summary.last_depth_bits <- trace_decimal_after(text, start, end, "bits=", summary.last_depth_bits)
+        summary.last_depth_format_kind <- trace_render_format_kind(text, start, end)
+    if trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress") and not trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress_missing_mrt1"):
         summary.fmask_decompress_count <- summary.fmask_decompress_count + 1
+    if trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress_missing_mrt1"):
+        summary.fmask_decompress_missing_mrt1_count <- summary.fmask_decompress_missing_mrt1_count + 1
+        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
     if trace_line_contains(text, start, end, "TRACE_RENDER metadata_texture_read"):
         ufc_trace_record_metadata_read(summary, text, start, end)
 
@@ -281,17 +416,21 @@ def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult 
     timed_out_value: mutable int = 0
     ok_value: mutable int = 0
     can Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read:
-        ok_value <- shadps4_elisa_run_ufc_trace_flags(root_dir, profile.name, profile.timeout_ms, 1 if profile.null_fmask_reads else 0, 1 if profile.fmask_decompress_in_place else 0, 1 if profile.compositor_null_layer else 0, 1 if profile.videoout_unorm else 0, log_path_buffer[0].ref[mutable u8&], 1024, exit_code.ref[mutable int&], timed_out_value.ref[mutable int&])
+        trusted Unsafe.RawExtern:
+            ok_value <- shadps4_elisa_run_ufc_trace_flags(root_dir, profile.name, profile.timeout_ms, 1 if profile.null_fmask_reads else 0, 1 if profile.fmask_decompress_in_place else 0, 1 if profile.compositor_null_layer else 0, 1 if profile.videoout_unorm else 0, log_path_buffer[0].ref[mutable u8&], 1024, exit_code.ref[mutable int&], timed_out_value.ref[mutable int&])
     native_error: mutable cstr = ""
     can Sys.FFI:
-        native_error <- shadps4_elisa_last_error()
+        trusted Unsafe.RawExtern:
+            native_error <- shadps4_elisa_last_error()
     log_text: mutable cstr = ""
     can Sys.FFI, FS.Read, SysMemory.Foreign:
-        log_text <- shadps4_elisa_read_file(log_path_buffer[0].ref[u8&])
+        trusted Unsafe.RawExtern:
+            log_text <- shadps4_elisa_read_file(log_path_buffer[0].ref[u8&])
     summary: RenderCheckpoint = ufc_trace_analyze_text(log_text)
     last_log_path: mutable cstr = ""
     can Sys.FFI:
-        last_log_path <- shadps4_elisa_last_log_path()
+        trusted Unsafe.RawExtern:
+            last_log_path <- shadps4_elisa_last_log_path()
     run: TraceRun = TraceRun(game, profile, last_log_path, exit_code, timed_out_value != 0)
     return TraceResult(ok_value != 0, run, summary, native_error)
 
@@ -301,18 +440,37 @@ def ufc_trace_run_baseline_safe(root_dir: cstr) -> TraceResult can[Clock.Read, F
         result <- ufc_trace_run_profile(root_dir, baseline_safe_profile())
     return result
 
+def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[FS.Read, Sys.FFI, SysMemory.Foreign]:
+    log_text: mutable cstr = ""
+    can Sys.FFI, FS.Read, SysMemory.Foreign:
+        trusted Unsafe.RawExtern:
+            log_text <- shadps4_elisa_read_file(path)
+    native_error: mutable cstr = ""
+    can Sys.FFI:
+        trusted Unsafe.RawExtern:
+            native_error <- shadps4_elisa_last_error()
+    summary: RenderCheckpoint = ufc_trace_analyze_text(log_text)
+    run: TraceRun = TraceRun(ufc1_game_id(), existing_log_profile(), path, 0, false)
+    return TraceResult(true, run, summary, native_error)
+
 def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
     can Console.Write:
-        printf("profile=%s\n", result.run.profile.name)
-        printf("game=%s\n", result.run.game.text)
-        printf("log=%s\n", result.run.log_path)
-        printf("exit_code=%d timed_out=%d ok=%d\n", result.run.exit_code, 1 if result.run.timed_out else 0, 1 if result.ok else 0)
-        if not result.ok:
-            printf("error=%s\n", result.error_message)
-        printf("lines=%lld image_bindings=%lld render_targets=%lld depth_targets=%lld\n", result.render.line_count, result.render.image_binding_count, result.render.render_target_count, result.render.depth_target_count)
-        printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
-        printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
-        printf("fmask_decompress=%lld metadata_texture_reads=%lld\n", result.render.fmask_decompress_count, result.render.metadata_texture_read_count)
-        printf("metadata_reads_by_kind fmask=%lld cmask=%lld htile=%lld unknown=%lld\n", result.render.fmask_texture_read_count, result.render.cmask_texture_read_count, result.render.htile_texture_read_count, result.render.unknown_metadata_read_count)
-        printf("metadata_actions null=%lld sample=%lld last_read_addr=0x%llx last_read_kind=%lld\n", result.render.null_metadata_action_count, result.render.sample_metadata_action_count, result.render.last_metadata_read_addr, result.render.last_metadata_read_kind)
-        printf("metadata_hits last_fmask=%lld last_cmask=%lld last_htile=%lld fmask_cmask_aliases=%lld\n", result.render.metadata_read_hits_last_fmask_count, result.render.metadata_read_hits_last_cmask_count, result.render.metadata_read_hits_last_htile_count, result.render.fmask_cmask_alias_count)
+        trusted Unsafe.RawExtern:
+            printf("profile=%s\n", result.run.profile.name)
+            printf("game=%s\n", result.run.game.text)
+            printf("log=%s\n", result.run.log_path)
+            printf("exit_code=%d timed_out=%d ok=%d\n", result.run.exit_code, 1 if result.run.timed_out else 0, 1 if result.ok else 0)
+            if not result.ok:
+                printf("error=%s\n", result.error_message)
+            printf("lines=%lld image_bindings=%lld render_targets=%lld depth_targets=%lld\n", result.render.line_count, result.render.image_binding_count, result.render.render_target_count, result.render.depth_target_count)
+            printf("image_binding_kinds texture=%lld storage=%lld videoout_storage=%lld last_image_id=%lld last_binding=%lld last_stage=%lld last_addr=0x%llx\n", result.render.image_binding_texture_count, result.render.image_binding_storage_count, result.render.image_binding_videoout_storage_count, result.render.last_image_binding_id, result.render.last_image_binding_index, result.render.last_image_binding_stage, result.render.last_image_binding_addr)
+            printf("last_image_binding format_kind=%lld samples=%lld bits=%lld\n", result.render.last_image_binding_format_kind, result.render.last_image_binding_samples, result.render.last_image_binding_bits)
+            printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.image_binding_null_count, result.render.compositor_null_layer_count, result.render.metadata_register_count, result.render.fmask_decompress_missing_mrt1_count, result.render.suspicious_score, result.render.first_suspicious_pass)
+            printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
+            printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
+            printf("last_formats render_kind=%lld render_samples=%lld render_bits=%lld depth_kind=%lld depth_samples=%lld depth_bits=%lld\n", result.render.last_render_format_kind, result.render.last_render_samples, result.render.last_render_bits, result.render.last_depth_format_kind, result.render.last_depth_samples, result.render.last_depth_bits)
+            printf("last_pipeline compute_shader=0x%llx vertex_shader=0x%llx compute_pipeline=0x%llx graphics_pipeline=0x%llx\n", result.render.last_compute_shader, result.render.last_vertex_shader, result.render.last_compute_pipeline, result.render.last_graphics_pipeline)
+            printf("fmask_decompress=%lld metadata_texture_reads=%lld\n", result.render.fmask_decompress_count, result.render.metadata_texture_read_count)
+            printf("metadata_reads_by_kind fmask=%lld cmask=%lld htile=%lld unknown=%lld\n", result.render.fmask_texture_read_count, result.render.cmask_texture_read_count, result.render.htile_texture_read_count, result.render.unknown_metadata_read_count)
+            printf("metadata_actions null=%lld sample=%lld last_read_addr=0x%llx last_read_kind=%lld\n", result.render.null_metadata_action_count, result.render.sample_metadata_action_count, result.render.last_metadata_read_addr, result.render.last_metadata_read_kind)
+            printf("metadata_hits last_fmask=%lld last_cmask=%lld last_htile=%lld fmask_cmask_aliases=%lld\n", result.render.metadata_read_hits_last_fmask_count, result.render.metadata_read_hits_last_cmask_count, result.render.metadata_read_hits_last_htile_count, result.render.fmask_cmask_alias_count)
