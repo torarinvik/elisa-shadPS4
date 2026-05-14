@@ -1,0 +1,8 @@
+extern shadps4_elisa_probe_value() -> i64
+
+
+@test
+def shadps4_c_api_probe_value_round_trips() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        if shadps4_elisa_probe_value() != 4242:
+            panic("expected shadPS4 C API probe value")

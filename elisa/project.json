@@ -1,0 +1,19 @@
+{
+  "version": "0.1.0",
+  "foreign": ["native/shadps4_c_api.c"],
+  "targets": {
+    "app": {
+      "entry": "src/main.elisa",
+      "emit": "obj",
+      "run-emit": "obj",
+      "output": "build/elisa_shadps4_probe",
+      "opt": "O0"
+    },
+    "tests": {
+      "entry": "test/shadps4_c_api_tests.elisa",
+      "emit": "llvm",
+      "output": "build/shadps4_c_api_tests.ll",
+      "opt": "O0"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+extern shadps4_elisa_probe_value() -> i64
+extern shadps4_elisa_probe_message() -> u8&
+extern puts(text: u8&) -> int can[Console.Write]
+
+
+def main() -> int can[Console.Write]:
+    value: i64 = shadps4_elisa_probe_value()
+    if value != 4242:
+        return 1
+    can Console.Write:
+        puts(shadps4_elisa_probe_message())
+    return 0
