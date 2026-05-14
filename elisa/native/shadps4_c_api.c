@@ -57,7 +57,8 @@ int shadps4_elisa_find_ufc1(char* out_path, uint64_t out_path_cap) {
     return 1;
 }
 
-static void shadps4_elisa_apply_profile_env(const char* profile) {
+static void shadps4_elisa_apply_trace_env(int null_fmask_reads, int fmask_decompress_in_place,
+                                          int compositor_null_layer, int videoout_unorm) {
     setenv("SHADPS4_TRACE_INPUT", "1", 1);
     setenv("SHADPS4_TRACE_RENDER", "1", 1);
     setenv("SHADPS4_TRACE_VIDEO_OUT_EVERY", "30", 1);
@@ -67,17 +68,38 @@ static void shadps4_elisa_apply_profile_env(const char* profile) {
     unsetenv("SHADPS4_COMPOSITOR_ZERO_LAYER");
     unsetenv("SHADPS4_VIDEOOUT_UNORM");
 
+    if (null_fmask_reads) {
+        setenv("SHADPS4_NULL_FMASK_TEXTURE_READS", "1", 1);
+    }
+    if (fmask_decompress_in_place) {
+        setenv("SHADPS4_FMASK_DECOMPRESS_IN_PLACE", "1", 1);
+    }
+    if (compositor_null_layer) {
+        setenv("SHADPS4_COMPOSITOR_NULL_LAYER", "1", 1);
+    }
+    if (videoout_unorm) {
+        setenv("SHADPS4_VIDEOOUT_UNORM", "1", 1);
+    }
+}
+
+static void shadps4_elisa_profile_flags(const char* profile, int* null_fmask_reads,
+                                        int* fmask_decompress_in_place,
+                                        int* compositor_null_layer, int* videoout_unorm) {
+    *null_fmask_reads = 0;
+    *fmask_decompress_in_place = 0;
+    *compositor_null_layer = 0;
+    *videoout_unorm = 0;
     if (profile == NULL) {
         return;
     }
     if (strcmp(profile, "fmask-null-read") == 0) {
-        setenv("SHADPS4_NULL_FMASK_TEXTURE_READS", "1", 1);
+        *null_fmask_reads = 1;
     } else if (strcmp(profile, "fmask-in-place") == 0) {
-        setenv("SHADPS4_FMASK_DECOMPRESS_IN_PLACE", "1", 1);
+        *fmask_decompress_in_place = 1;
     } else if (strcmp(profile, "compositor-null-layer") == 0) {
-        setenv("SHADPS4_COMPOSITOR_NULL_LAYER", "1", 1);
+        *compositor_null_layer = 1;
     } else if (strcmp(profile, "videoout-unorm") == 0) {
-        setenv("SHADPS4_VIDEOOUT_UNORM", "1", 1);
+        *videoout_unorm = 1;
     }
 }
 
@@ -87,9 +109,12 @@ static uint64_t shadps4_elisa_monotonic_ms(void) {
     return ((uint64_t)ts.tv_sec * 1000u) + ((uint64_t)ts.tv_nsec / 1000000u);
 }
 
-int shadps4_elisa_run_ufc_trace(const char* root_dir, const char* profile, uint32_t timeout_ms,
-                                char* out_log_path, uint64_t out_log_path_cap,
-                                int* out_exit_code, int* out_timed_out) {
+static int shadps4_elisa_run_ufc_trace_impl(const char* root_dir, const char* profile,
+                                            uint32_t timeout_ms, int null_fmask_reads,
+                                            int fmask_decompress_in_place,
+                                            int compositor_null_layer, int videoout_unorm,
+                                            char* out_log_path, uint64_t out_log_path_cap,
+                                            int* out_exit_code, int* out_timed_out) {
     const char* root = root_dir != NULL ? root_dir : ".";
     const char* chosen_profile = profile != NULL ? profile : "baseline-safe";
     if (out_log_path == NULL || out_log_path_cap == 0) {
@@ -129,7 +154,8 @@ int shadps4_elisa_run_ufc_trace(const char* root_dir, const char* profile, uint3
             close(fd);
         }
         chdir(root);
-        shadps4_elisa_apply_profile_env(chosen_profile);
+        shadps4_elisa_apply_trace_env(null_fmask_reads, fmask_decompress_in_place,
+                                      compositor_null_layer, videoout_unorm);
         execl("./build/shadps4", "shadps4", "--game", "Games/CUSA00264", (char*)NULL);
         _exit(127);
     }
@@ -172,6 +198,33 @@ int shadps4_elisa_run_ufc_trace(const char* root_dir, const char* profile, uint3
         }
         usleep(50000);
     }
+}
+
+int shadps4_elisa_run_ufc_trace(const char* root_dir, const char* profile, uint32_t timeout_ms,
+                                char* out_log_path, uint64_t out_log_path_cap,
+                                int* out_exit_code, int* out_timed_out) {
+    int null_fmask_reads = 0;
+    int fmask_decompress_in_place = 0;
+    int compositor_null_layer = 0;
+    int videoout_unorm = 0;
+    shadps4_elisa_profile_flags(profile, &null_fmask_reads, &fmask_decompress_in_place,
+                                &compositor_null_layer, &videoout_unorm);
+    return shadps4_elisa_run_ufc_trace_impl(root_dir, profile, timeout_ms, null_fmask_reads,
+                                            fmask_decompress_in_place, compositor_null_layer,
+                                            videoout_unorm, out_log_path, out_log_path_cap,
+                                            out_exit_code, out_timed_out);
+}
+
+int shadps4_elisa_run_ufc_trace_flags(const char* root_dir, const char* profile,
+                                      uint32_t timeout_ms, int null_fmask_reads,
+                                      int fmask_decompress_in_place, int compositor_null_layer,
+                                      int videoout_unorm, char* out_log_path,
+                                      uint64_t out_log_path_cap, int* out_exit_code,
+                                      int* out_timed_out) {
+    return shadps4_elisa_run_ufc_trace_impl(root_dir, profile, timeout_ms, null_fmask_reads,
+                                            fmask_decompress_in_place, compositor_null_layer,
+                                            videoout_unorm, out_log_path, out_log_path_cap,
+                                            out_exit_code, out_timed_out);
 }
 
 const char* shadps4_elisa_read_file(const char* path) {

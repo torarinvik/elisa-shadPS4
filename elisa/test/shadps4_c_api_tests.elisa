@@ -25,6 +25,14 @@ def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
             panic("expected one fmask decompress event")
         if summary.metadata_texture_read_count != 1:
             panic("expected one metadata texture read")
+        if summary.fmask_texture_read_count != 1:
+            panic("expected one fmask metadata read")
+        if summary.cmask_texture_read_count != 0:
+            panic("expected no cmask metadata reads")
+        if summary.htile_texture_read_count != 0:
+            panic("expected no htile metadata reads")
+        if summary.unknown_metadata_read_count != 0:
+            panic("expected no unknown metadata reads")
         if summary.last_videoout_stage != 18:
             panic("expected videoout stage 18")
         if summary.last_render_pass != 2160:
@@ -37,6 +45,18 @@ def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
             panic("expected cmask address")
         if summary.last_htile_addr != 0x272ff0000:
             panic("expected htile address")
+        if summary.last_metadata_read_addr != 0x2760f8000:
+            panic("expected metadata read address")
+        if summary.last_metadata_read_kind != metadata_kind_fmask():
+            panic("expected fmask metadata kind")
+        if summary.metadata_read_hits_last_fmask_count != 1:
+            panic("expected metadata read to hit last fmask")
+        if summary.metadata_read_hits_last_cmask_count != 0:
+            panic("expected metadata read to miss last cmask")
+        if summary.metadata_read_hits_last_htile_count != 0:
+            panic("expected metadata read to miss last htile")
+        if summary.fmask_cmask_alias_count != 0:
+            panic("expected no fmask/cmask alias in fixture")
 
 
 @test
@@ -54,14 +74,24 @@ def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
             panic("expected videoout unorm profile name")
         if baseline_safe_profile().timeout_ms != 8000:
             panic("expected baseline timeout")
+        if baseline_safe_profile().null_fmask_reads or baseline_safe_profile().fmask_decompress_in_place or baseline_safe_profile().compositor_null_layer or baseline_safe_profile().videoout_unorm:
+            panic("expected baseline to have no experiment toggles")
         if fmask_null_read_profile().timeout_ms != 8000:
             panic("expected fmask null-read timeout")
+        if not fmask_null_read_profile().null_fmask_reads:
+            panic("expected fmask null-read flag")
         if fmask_in_place_profile().timeout_ms != 8000:
             panic("expected fmask in-place timeout")
+        if not fmask_in_place_profile().fmask_decompress_in_place:
+            panic("expected fmask in-place flag")
         if compositor_null_layer_profile().timeout_ms != 8000:
             panic("expected compositor timeout")
+        if not compositor_null_layer_profile().compositor_null_layer:
+            panic("expected compositor null-layer flag")
         if videoout_unorm_profile().timeout_ms != 8000:
             panic("expected videoout timeout")
+        if not videoout_unorm_profile().videoout_unorm:
+            panic("expected videoout unorm flag")
 
 
 @test
@@ -74,3 +104,5 @@ def ufc_trace_parser_handles_empty_logs() -> void can[Abort.Panic]:
             panic("expected no image bindings")
         if summary.last_videoout_stage != -1:
             panic("expected missing videoout stage")
+        if summary.last_metadata_read_addr != -1:
+            panic("expected missing metadata read address")
