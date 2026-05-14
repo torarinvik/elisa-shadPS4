@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/debug.h"
+#include "common/trace_control.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "shader_recompiler/runtime_info.h"
@@ -14,11 +15,101 @@
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+
 #ifdef MemoryBarrier
 #undef MemoryBarrier
 #endif
 
 namespace Vulkan {
+
+static bool IsTraceRenderEnabled() {
+    return Common::Trace::IsAggressiveLoggingEnabled();
+}
+
+static bool IsFmaskDecompressResolveEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_FMASK_DECOMPRESS_AS_RESOLVE");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsFmaskDecompressInPlaceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_FMASK_DECOMPRESS_IN_PLACE");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsNullMetaTextureReadEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_NULL_METADATA_TEXTURE_READS");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsNullFmaskTextureReadEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_NULL_FMASK_TEXTURE_READS");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsCompositorNullLayerEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_COMPOSITOR_NULL_LAYER");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsCompositorZeroLayerEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_COMPOSITOR_ZERO_LAYER");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static const char* MetaTypeName(VideoCore::TextureCache::MetaDataInfo::Type type) {
+    switch (type) {
+    case VideoCore::TextureCache::MetaDataInfo::Type::CMask:
+        return "cmask";
+    case VideoCore::TextureCache::MetaDataInfo::Type::FMask:
+        return "fmask";
+    case VideoCore::TextureCache::MetaDataInfo::Type::HTile:
+        return "htile";
+    }
+    return "unknown";
+}
+
+static const char* BindingTypeName(VideoCore::TextureCache::BindingType type) {
+    switch (type) {
+    case VideoCore::TextureCache::BindingType::Texture:
+        return "texture";
+    case VideoCore::TextureCache::BindingType::Storage:
+        return "storage";
+    case VideoCore::TextureCache::BindingType::RenderTarget:
+        return "render_target";
+    case VideoCore::TextureCache::BindingType::DepthTarget:
+        return "depth_target";
+    case VideoCore::TextureCache::BindingType::VideoOut:
+        return "video_out";
+    }
+    return "unknown";
+}
+
+static bool IsLikelyVideoOutStorageImage(const VideoCore::Image& image) {
+    return image.info.size.width == 1920 && image.info.size.height == 1080 &&
+           image.info.num_samples == 1 && image.info.guest_size >= 8'000'000 &&
+           image.info.guest_size <= 9'000'000 && image.info.guest_address != 0;
+}
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -67,8 +158,44 @@ bool Rasterizer::FilterDraw() {
         return false;
     }
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::FmaskDecompress) {
-        // TODO: check for a valid MRT1 to promote the draw to the resolve pass.
-        LOG_TRACE(Render_Vulkan, "FMask decompression pass skipped");
+        const bool can_resolve =
+            IsFmaskDecompressResolveEnabled() && regs.color_buffers[0] && regs.color_buffers[1];
+        const bool can_decompress_in_place = IsFmaskDecompressInPlaceEnabled() &&
+                                             regs.color_buffers[0] && !regs.color_buffers[1];
+        if (IsTraceRenderEnabled()) {
+            static std::atomic<u64> fmask_decompress_count{};
+            const u64 count = fmask_decompress_count.fetch_add(1, std::memory_order_relaxed) + 1;
+            const char* action =
+                can_resolve ? "resolve"
+                            : can_decompress_in_place ? "decompress_in_place" : "skip_no_mrt1";
+            const bool should_log = count <= 16 || (count % 600) == 0;
+            if (should_log) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_RENDER fmask_decompress count={} mrt0={:#x} mrt1={:#x} "
+                         "samples0={} samples1={} action={}",
+                         count, regs.color_buffers[0].Address(), regs.color_buffers[1].Address(),
+                         regs.color_buffers[0].NumSamples(), regs.color_buffers[1].NumSamples(),
+                         action);
+            }
+        }
+        if (can_resolve) {
+            Resolve();
+        } else if (can_decompress_in_place) {
+            const auto& mrt0_hint = liverpool->last_cb_extent[0];
+            VideoCore::TextureCache::ImageDesc mrt0_desc{regs.color_buffers[0], mrt0_hint};
+            auto& mrt0_image = texture_cache.GetImage(texture_cache.FindImage(mrt0_desc, true));
+            mrt0_image.SetBackingSamples(1);
+        } else if (regs.color_buffers[0] && !regs.color_buffers[1]) {
+            static std::atomic_bool logged_missing_mrt1{};
+            if (!logged_missing_mrt1.exchange(true, std::memory_order_relaxed)) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_RENDER fmask_decompress_missing_mrt1 mrt0={:#x} "
+                            "samples0={} action=skip",
+                            regs.color_buffers[0].Address(), regs.color_buffers[0].NumSamples());
+            }
+        } else {
+            LOG_TRACE(Render_Vulkan, "FMask decompression pass skipped");
+        }
         ScopedMarkerInsert("FmaskDecompress");
         return false;
     }
@@ -675,7 +802,75 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     for (const auto& image_desc : stage.images) {
         const auto tsharp = image_desc.GetSharp(stage);
         if (texture_cache.IsMeta(tsharp.Address())) {
-            LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
+            const auto* meta = texture_cache.FindMetaData(tsharp.Address());
+            const bool null_fmask_read =
+                IsNullFmaskTextureReadEnabled() && meta &&
+                meta->type == VideoCore::TextureCache::MetaDataInfo::Type::FMask &&
+                !image_desc.is_written;
+            const bool null_meta_read = !null_fmask_read && IsNullMetaTextureReadEnabled() &&
+                                        !image_desc.is_written;
+            const char* action =
+                null_fmask_read ? "null_fmask_texture"
+                                : null_meta_read ? "null_descriptor" : "sample_metadata";
+            if (IsTraceRenderEnabled()) {
+                static std::atomic<u64> metadata_texture_read_count{};
+                const u64 count =
+                    metadata_texture_read_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                const bool should_log = count <= 32 || (count % 300) == 0;
+                if (meta && should_log) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_RENDER metadata_texture_read count={} addr={:#x} kind={} "
+                                "action={} "
+                                "owner_image={} owner_binding={} owner_guest_addr={:#x} "
+                                "owner_guest_size={} owner_size={}x{}x{} owner_pitch={} "
+                                "owner_vk_format={} owner_tile_mode={} owner_array_mode={} "
+                                "owner_bits={} owner_samples={} clear_mask={:#x} data_fmt={} "
+                                "num_fmt={} type={} width={} height={} depth={} pitch={} mips={} "
+                                "is_written={}",
+                                count, tsharp.Address(), MetaTypeName(meta->type), action,
+                                meta->owner_image_id.index, BindingTypeName(meta->owner_binding),
+                                meta->owner_guest_address, meta->owner_guest_size,
+                                meta->owner_size.width, meta->owner_size.height,
+                                meta->owner_size.depth, meta->owner_pitch,
+                                static_cast<u32>(meta->owner_format),
+                                static_cast<u32>(meta->owner_tile_mode),
+                                static_cast<u32>(meta->owner_array_mode), meta->owner_num_bits,
+                                meta->owner_num_samples, static_cast<u32>(meta->clear_mask),
+                                static_cast<u32>(tsharp.GetDataFmt()),
+                                static_cast<u32>(tsharp.GetNumberFmt()),
+                                static_cast<u32>(tsharp.GetType()),
+                                static_cast<u32>(tsharp.width + 1),
+                                static_cast<u32>(tsharp.height + 1),
+                                static_cast<u32>(tsharp.depth + 1), tsharp.Pitch(),
+                                tsharp.NumLevels(), image_desc.is_written);
+                } else if (should_log) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_RENDER metadata_texture_read count={} addr={:#x} "
+                                "kind=unknown action={} data_fmt={} num_fmt={} type={} width={} "
+                                "height={} depth={} pitch={} mips={} is_written={}",
+                                count, tsharp.Address(), action,
+                                static_cast<u32>(tsharp.GetDataFmt()),
+                                static_cast<u32>(tsharp.GetNumberFmt()),
+                                static_cast<u32>(tsharp.GetType()),
+                                static_cast<u32>(tsharp.width + 1),
+                                static_cast<u32>(tsharp.height + 1),
+                                static_cast<u32>(tsharp.depth + 1), tsharp.Pitch(),
+                                tsharp.NumLevels(), image_desc.is_written);
+                }
+            } else {
+                LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
+            }
+            if (null_fmask_read) {
+                VideoCore::TextureCache::ImageDesc desc{tsharp, image_desc};
+                image_bindings.emplace_back(texture_cache.GetNullImage(desc.info.pixel_format), desc);
+                image_descriptor_array_sizes.push_back(1);
+                continue;
+            }
+            if (null_meta_read) {
+                image_bindings.emplace_back(std::piecewise_construct, std::tuple{}, std::tuple{});
+                image_descriptor_array_sizes.push_back(1);
+                continue;
+            }
         }
 
         if (tsharp.GetDataFmt() == AmdGpu::DataFormat::FormatInvalid) {
@@ -701,6 +896,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             }
 
             image_id = texture_cache.FindImage(desc);
+            if (IsTraceRenderEnabled() && IsCompositorZeroLayerEnabled() &&
+                stage.stage == Shader::Stage::Compute &&
+                stage.pgm_hash == 0xc455a5aa2c447041ULL && image_bindings.size() == 1 &&
+                !image_desc.is_written) {
+                desc.view_info.mapping.r = vk::ComponentSwizzle::eZero;
+                desc.view_info.mapping.g = vk::ComponentSwizzle::eZero;
+                desc.view_info.mapping.b = vk::ComponentSwizzle::eZero;
+                desc.view_info.mapping.a = vk::ComponentSwizzle::eZero;
+            }
             auto* image = &texture_cache.GetImage(image_id);
             if (image->depth_id) {
                 // If this image has an associated depth image, it's a stencil attachment.
@@ -719,10 +923,66 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         image_descriptor_array_sizes.push_back(num_bindings);
     }
 
+    const bool trace_image_bindings = IsTraceRenderEnabled();
+    bool trace_stage_has_videoout_storage = false;
+    u64 trace_videoout_stage_index = 0;
+    if (trace_image_bindings) {
+        for (const auto& [image_id, desc] : image_bindings) {
+            if (!image_id || desc.type != VideoCore::TextureCache::BindingType::Storage) {
+                continue;
+            }
+            if (IsLikelyVideoOutStorageImage(texture_cache.GetImage(image_id))) {
+                trace_stage_has_videoout_storage = true;
+                break;
+            }
+        }
+        if (trace_stage_has_videoout_storage) {
+            static std::atomic<u64> videoout_storage_stage_count{};
+            trace_videoout_stage_index =
+                videoout_storage_stage_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
+    }
+
     // Second pass to re-bind images that were updated after binding
+    u32 trace_image_binding_idx = 0;
     for (auto& [image_id, desc] : image_bindings) {
         bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
+        if (IsTraceRenderEnabled() && IsCompositorNullLayerEnabled() &&
+            stage.stage == Shader::Stage::Compute &&
+            stage.pgm_hash == 0xc455a5aa2c447041ULL && trace_image_binding_idx == 0 &&
+            !is_storage) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_RENDER compositor_null_layer binding_index={} old_image_id={} "
+                        "desc_guest_addr={:#x} desc_size={}x{}x{} desc_format={}",
+                        trace_image_binding_idx, image_id.index, desc.info.guest_address,
+                        desc.info.size.width, desc.info.size.height, desc.info.size.depth,
+                        vk::to_string(desc.info.pixel_format));
+            image_id = texture_cache.GetNullImage(desc.info.pixel_format);
+        }
         if (!image_id) {
+            if (trace_image_bindings && (trace_stage_has_videoout_storage || is_storage)) {
+                static std::atomic<u64> null_image_binding_count{};
+                const u64 count =
+                    null_image_binding_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                const bool should_log =
+                    trace_stage_has_videoout_storage || count <= 64 || (count % 300) == 0;
+                if (should_log) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_RENDER image_binding_null count={} videoout_stage={} "
+                                "binding_index={} stage={} pgm={:#x} descriptor={} "
+                                "desc_guest_addr={:#x} desc_guest_size={} desc_size={}x{}x{} "
+                                "desc_pitch={} desc_vk_format={} desc_tile_mode={} desc_array_mode={} "
+                                "desc_bits={} desc_samples={}",
+                                count, trace_videoout_stage_index, trace_image_binding_idx,
+                                stage.stage, stage.pgm_hash, BindingTypeName(desc.type),
+                                desc.info.guest_address, desc.info.guest_size,
+                                desc.info.size.width, desc.info.size.height, desc.info.size.depth,
+                                desc.info.pitch, vk::to_string(desc.info.pixel_format),
+                                static_cast<u32>(desc.info.tile_mode),
+                                static_cast<u32>(desc.info.array_mode), desc.info.num_bits,
+                                desc.info.num_samples);
+                }
+            }
             if (instance.IsNullDescriptorSupported()) {
                 image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
             } else {
@@ -776,7 +1036,53 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
             image_infos.emplace_back(VK_NULL_HANDLE, *image_view.image_view,
                                      image.backing->state.layout);
+
+            if (trace_image_bindings && (trace_stage_has_videoout_storage || is_storage)) {
+                static std::atomic<u64> image_binding_count{};
+                const u64 count =
+                    image_binding_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                const bool is_videoout_storage = is_storage && IsLikelyVideoOutStorageImage(image);
+                const bool should_log = trace_stage_has_videoout_storage ||
+                                        is_videoout_storage || count <= 128 ||
+                                        (count % 300) == 0;
+                if (should_log) {
+                    const u32 backing_samples = image.backing ? image.backing->num_samples : 0;
+                    const auto backing_layout =
+                        image.backing ? image.backing->state.layout : vk::ImageLayout::eUndefined;
+                    const u32 usage_texture = image.usage.texture;
+                    const u32 usage_storage = image.usage.storage;
+                    const u32 usage_rt = image.usage.render_target;
+                    const u32 usage_dt = image.usage.depth_target;
+                    const u32 usage_vo = image.usage.vo_surface;
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_RENDER image_binding count={} videoout_stage={} "
+                             "binding_index={} stage={} pgm={:#x} descriptor={} "
+                             "is_videoout_storage={} image_id={} guest_addr={:#x} "
+                             "guest_size={} size={}x{}x{} pitch={} vk_format={} "
+                             "tile_mode={} array_mode={} bits={} info_samples={} "
+                             "backing_samples={} layout={} flags={:#x} usage=t{}s{}rt{}dt{}vo{} "
+                             "desc_guest_addr={:#x} desc_size={}x{}x{} desc_pitch={} "
+                             "desc_vk_format={} desc_samples={} range_level={} range_levels={} "
+                             "range_slice={} range_slices={}",
+                             count, trace_videoout_stage_index, trace_image_binding_idx,
+                             stage.stage, stage.pgm_hash, BindingTypeName(desc.type),
+                             is_videoout_storage, image_id.index, image.info.guest_address,
+                             image.info.guest_size, image.info.size.width, image.info.size.height,
+                             image.info.size.depth, image.info.pitch,
+                             vk::to_string(image.info.pixel_format),
+                             static_cast<u32>(image.info.tile_mode),
+                             static_cast<u32>(image.info.array_mode), image.info.num_bits,
+                             image.info.num_samples, backing_samples, vk::to_string(backing_layout),
+                             static_cast<u32>(image.flags), usage_texture, usage_storage, usage_rt,
+                             usage_dt, usage_vo, desc.info.guest_address, desc.info.size.width,
+                             desc.info.size.height, desc.info.size.depth, desc.info.pitch,
+                             vk::to_string(desc.info.pixel_format), desc.info.num_samples,
+                             desc.view_info.range.base.level, desc.view_info.range.extent.levels,
+                             desc.view_info.range.base.layer, desc.view_info.range.extent.layers);
+                }
+            }
         }
+        ++trace_image_binding_idx;
     }
 
     u32 image_info_idx = first_image_idx;
@@ -822,6 +1128,12 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     attachment_feedback_loop = false;
     const auto& regs = liverpool->regs;
     const auto& key = pipeline->GetGraphicsKey();
+    static std::atomic<u64> render_pass_count{};
+    const bool trace_render_pass = IsTraceRenderEnabled();
+    const u64 render_pass_index =
+        trace_render_pass ? render_pass_count.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+    const bool log_render_pass =
+        trace_render_pass && (render_pass_index <= 96 || (render_pass_index % 180) == 0);
     RenderState state;
     state.width = instance.GetMaxFramebufferWidth();
     state.height = instance.GetMaxFramebufferHeight();
@@ -875,6 +1187,26 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         attachment.clear_value = clear_value.color.uint32;
         attachment.is_clear = is_clear;
 
+        if (log_render_pass) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_RENDER render_target pass={} cb={} mrt_mask={:#x} color_mode={} "
+                     "prim={} cb_addr={:#x} cb_samples={} image_id={} guest_addr={:#x} "
+                     "guest_size={} size={}x{}x{} pitch={} vk_format={} tile_mode={} "
+                     "array_mode={} bits={} info_samples={} backing_samples={} layout={} "
+                     "flags={:#x} clear={} clear_value0={:#x} cmask={:#x} fmask={:#x}",
+                     render_pass_index, cb, key.mrt_mask, static_cast<u32>(regs.color_control.mode),
+                     static_cast<u32>(regs.primitive_type), col_buf.Address(), col_buf.NumSamples(),
+                     image_id.index, image->info.guest_address, image->info.guest_size,
+                     image->info.size.width, image->info.size.height, image->info.size.depth,
+                     image->info.pitch, vk::to_string(image->info.pixel_format),
+                     static_cast<u32>(image->info.tile_mode),
+                     static_cast<u32>(image->info.array_mode), image->info.num_bits,
+                     image->info.num_samples, image->backing->num_samples,
+                     vk::to_string(image->backing->state.layout), static_cast<u32>(image->flags),
+                     is_clear, clear_value.color.uint32[0], col_buf.CmaskAddress(),
+                     col_buf.FmaskAddress());
+        }
+
         image->usage.render_target = 1u;
     }
     for (u32 cb = state.num_color_attachments; cb < state.color_attachments.size(); ++cb) {
@@ -927,6 +1259,25 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             attachment.clear_value[1] = is_stencil_clear ? regs.stencil_clear : 0u;
             attachment.has_stencil = true;
             attachment.stencil_clear = is_stencil_clear;
+        }
+
+        if (log_render_pass) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_RENDER depth_target pass={} image_id={} depth_addr={:#x} "
+                     "stencil_addr={:#x} htile={:#x} guest_addr={:#x} guest_size={} "
+                     "size={}x{}x{} pitch={} vk_format={} tile_mode={} array_mode={} "
+                     "bits={} samples={} backing_samples={} layout={} flags={:#x} "
+                     "depth_clear={} stencil_clear={} clear_depth={:#x} clear_stencil={:#x}",
+                     render_pass_index, image_id.index, regs.depth_buffer.DepthAddress(),
+                     regs.depth_buffer.StencilAddress(), htile_address, image.info.guest_address,
+                     image.info.guest_size, image.info.size.width, image.info.size.height,
+                     image.info.size.depth, image.info.pitch, vk::to_string(image.info.pixel_format),
+                     static_cast<u32>(image.info.tile_mode),
+                     static_cast<u32>(image.info.array_mode), image.info.num_bits,
+                     image.info.num_samples, image.backing->num_samples,
+                     vk::to_string(image.backing->state.layout), static_cast<u32>(image.flags),
+                     is_depth_clear, is_stencil_clear, attachment.clear_value[0],
+                     attachment.clear_value[1]);
         }
 
         image.usage.depth_target = true;

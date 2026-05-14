@@ -7,7 +7,11 @@
 #include "video_core/renderdoc.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <renderdoc_app.h>
+#include <string_view>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -27,10 +31,47 @@ enum class CaptureState {
 static CaptureState capture_state{CaptureState::Idle};
 static std::atomic<u32> screenshot_game_only_count{0};
 static std::atomic<u32> screenshot_with_overlays_count{0};
+static std::atomic_bool auto_screenshot_thread_started{false};
 
 RENDERDOC_API_1_6_0* rdoc_api{};
 
+static bool IsEnvEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::string_view{value} != "0";
+}
+
+static u32 GetAutoScreenshotIntervalMs() {
+    const char* value = std::getenv("SHADPS4_TRACE_SCREENSHOT_INTERVAL_MS");
+    if (value == nullptr || value[0] == '\0') {
+        return 0;
+    }
+    const int interval = std::atoi(value);
+    return interval > 0 ? static_cast<u32>(interval) : 0;
+}
+
+static void StartAutoScreenshotThread() {
+    const u32 interval_ms = GetAutoScreenshotIntervalMs();
+    if (interval_ms == 0 || auto_screenshot_thread_started.exchange(true)) {
+        return;
+    }
+
+    const bool game_only = IsEnvEnabled("SHADPS4_TRACE_SCREENSHOT_GAME_ONLY");
+    LOG_INFO(Render, "Trace screenshots enabled: interval={}ms kind={}", interval_ms,
+             game_only ? "game-only" : "with-overlays");
+
+    std::thread([interval_ms, game_only] {
+        const auto interval = std::chrono::milliseconds(interval_ms);
+        while (true) {
+            std::this_thread::sleep_for(interval);
+            RequestScreenshot(game_only ? ScreenshotRequest::GameOnly
+                                        : ScreenshotRequest::WithOverlays);
+        }
+    }).detach();
+}
+
 void LoadRenderDoc() {
+    StartAutoScreenshotThread();
+
 #ifdef WIN32
 
     // Check if we are running by RDoc GUI

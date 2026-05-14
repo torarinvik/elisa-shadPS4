@@ -9,6 +9,9 @@
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/tile.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #include <magic_enum/magic_enum.hpp>
 
 namespace VideoCore {
@@ -16,6 +19,14 @@ namespace VideoCore {
 using namespace Vulkan;
 using Libraries::VideoOut::TilingMode;
 using VideoOutFormat = Libraries::VideoOut::PixelFormat;
+
+static bool IsVideoOutUnormExperimentEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_VIDEOOUT_UNORM");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
 
 static vk::Format ConvertPixelFormat(const VideoOutFormat format) {
     switch (format) {
@@ -43,6 +54,13 @@ ImageInfo::ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group,
         props.is_tiled ? AmdGpu::TileMode::Display2DThin : AmdGpu::TileMode::DisplayLinearAligned;
     array_mode = AmdGpu::GetArrayMode(tile_mode);
     pixel_format = ConvertPixelFormat(attrib.pixel_format);
+    if (IsVideoOutUnormExperimentEnabled()) {
+        if (pixel_format == vk::Format::eR8G8B8A8Srgb) {
+            pixel_format = vk::Format::eR8G8B8A8Unorm;
+        } else if (pixel_format == vk::Format::eB8G8R8A8Srgb) {
+            pixel_format = vk::Format::eB8G8R8A8Unorm;
+        }
+    }
     type = AmdGpu::ImageType::Color2D;
     size.width = attrib.width;
     size.height = attrib.height;

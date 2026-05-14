@@ -1,3 +1,6 @@
+include "../src/ufc_trace.elisa"
+include "ufc_trace_fixture.elisa"
+
 extern shadps4_elisa_probe_value() -> i64
 
 
@@ -6,3 +9,68 @@ def shadps4_c_api_probe_value_round_trips() -> void can[Abort.Panic]:
     can Abort.Panic:
         if shadps4_elisa_probe_value() != 4242:
             panic("expected shadPS4 C API probe value")
+
+
+@test
+def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: RenderCheckpoint = ufc_trace_analyze_text(UFC_TRACE_FIXTURE)
+        if summary.image_binding_count != 1:
+            panic("expected one image binding")
+        if summary.render_target_count != 1:
+            panic("expected one render target")
+        if summary.depth_target_count != 1:
+            panic("expected one depth target")
+        if summary.fmask_decompress_count != 1:
+            panic("expected one fmask decompress event")
+        if summary.metadata_texture_read_count != 1:
+            panic("expected one metadata texture read")
+        if summary.last_videoout_stage != 18:
+            panic("expected videoout stage 18")
+        if summary.last_render_pass != 2160:
+            panic("expected render pass 2160")
+        if summary.last_depth_pass != 2160:
+            panic("expected depth pass 2160")
+        if summary.last_fmask_addr != 0x2760f8000:
+            panic("expected fmask address")
+        if summary.last_cmask_addr != 0x2760f0000:
+            panic("expected cmask address")
+        if summary.last_htile_addr != 0x272ff0000:
+            panic("expected htile address")
+
+
+@test
+def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        if baseline_safe_profile().name != "baseline-safe":
+            panic("expected baseline profile name")
+        if fmask_null_read_profile().name != "fmask-null-read":
+            panic("expected fmask null-read profile name")
+        if fmask_in_place_profile().name != "fmask-in-place":
+            panic("expected fmask in-place profile name")
+        if compositor_null_layer_profile().name != "compositor-null-layer":
+            panic("expected compositor null-layer profile name")
+        if videoout_unorm_profile().name != "videoout-unorm":
+            panic("expected videoout unorm profile name")
+        if baseline_safe_profile().timeout_ms != 8000:
+            panic("expected baseline timeout")
+        if fmask_null_read_profile().timeout_ms != 8000:
+            panic("expected fmask null-read timeout")
+        if fmask_in_place_profile().timeout_ms != 8000:
+            panic("expected fmask in-place timeout")
+        if compositor_null_layer_profile().timeout_ms != 8000:
+            panic("expected compositor timeout")
+        if videoout_unorm_profile().timeout_ms != 8000:
+            panic("expected videoout timeout")
+
+
+@test
+def ufc_trace_parser_handles_empty_logs() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: RenderCheckpoint = ufc_trace_analyze_text("")
+        if summary.line_count != 1:
+            panic("expected one empty line")
+        if summary.image_binding_count != 0:
+            panic("expected no image bindings")
+        if summary.last_videoout_stage != -1:
+            panic("expected missing videoout stage")

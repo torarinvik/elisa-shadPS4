@@ -1,13 +1,17 @@
-# Elisa shadPS4 interop smoke
+# Elisa shadPS4 interop and UFC trace harness
 
-This is the smallest possible Elisa-to-C bridge for dogfooding shadPS4 interop.
+This directory dogfoods Elisa against shadPS4 through a deliberately small C ABI.
 
-The first slice intentionally does not call emulator internals. It proves that an Elisa native target can:
+The first slice proved the native bridge. The current slice adds a safe UFC 1 trace harness:
 
 - link a C translation unit from the shadPS4 tree
 - call exported C ABI functions
-- run a native Elisa executable
-- run an Elisa test against the same C ABI
+- annotate imported C entrypoints with granular permissions
+- keep grant blocks narrow around the actual process, filesystem, FFI, and console operations
+- launch `build/shadps4` through a timeout-enforced wrapper
+- run `CUSA00264` with short, named trace profiles
+- parse render/FMASK trace logs in Elisa
+- summarize the last known render checkpoints before risky black-screen investigation
 
 Run from the Elisa-core `compiler` directory:
 
@@ -16,15 +20,18 @@ go run ./src test tests --project ../shadPS4/elisa
 go run ./src run app --project ../shadPS4/elisa
 ```
 
-Expected app output:
+The app runs the `baseline-safe` profile with an 8 second timeout and prints a render summary. The test target uses fixture logs and does not launch the emulator.
 
-```text
-shadPS4 C API probe reached from Elisa
-```
+The native reader caps analysis input at the latest 2 MiB of a trace log, so runaway traces cannot make the Elisa analyzer chew through unbounded output. Normal short safe runs are currently small enough to analyze whole.
 
-Next useful slices:
+The harness intentionally keeps the effect grants local. For example, `main.elisa` grants process/env/filesystem authority only around `ufc_trace_run_baseline_safe`, and grants `Console.Write` only around summary printing. Pure Elisa parsing code does not need those permissions.
 
-1. Add a tiny `extern "C"` C++ shim that calls a side-effect-free shadPS4 version/config function.
-2. Add a C API function that invokes the existing shadPS4 CLI help path and returns its exit code.
-3. Wrap the C API in Elisa with `can Sys.FFI:` once granular system effects exist.
-4. Start exposing stable handles instead of raw pointers before touching emulator state.
+Available profiles are represented in Elisa:
+
+- `baseline-safe`
+- `fmask-null-read`
+- `fmask-in-place`
+- `compositor-null-layer`
+- `videoout-unorm`
+
+Safety rule: do not use this harness for long black-screen repro loops yet. It is intentionally an observability and process-control slice, not a renderer/FMASK behavior change.

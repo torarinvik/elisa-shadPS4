@@ -23,6 +23,22 @@ struct ImageOperands {
         operands.push_back(value2);
     }
 
+    Id RuntimeOffset(EmitContext& ctx, const IR::Value& offset) {
+        const Id value = ctx.Def(offset);
+        switch (offset.Type()) {
+        case IR::Type::U32:
+            return ctx.OpBitcast(ctx.S32[1], value);
+        case IR::Type::U32x2:
+            return ctx.OpBitcast(ctx.S32[2], value);
+        case IR::Type::U32x3:
+            return ctx.OpBitcast(ctx.S32[3], value);
+        case IR::Type::U32x4:
+            return ctx.OpBitcast(ctx.S32[4], value);
+        default:
+            UNREACHABLE_MSG("Unsupported runtime image offset type {}", offset.Type());
+        }
+    }
+
     void AddOffset(EmitContext& ctx, const IR::Value& offset,
                    bool can_use_runtime_offsets = false) {
         if (offset.IsEmpty()) {
@@ -52,7 +68,7 @@ struct ImageOperands {
             }
         }
         if (can_use_runtime_offsets) {
-            Add(spv::ImageOperandsMask::Offset, ctx.Def(offset));
+            Add(spv::ImageOperandsMask::Offset, RuntimeOffset(ctx, offset));
         } else {
             LOG_WARNING(Render_Vulkan,
                         "Runtime offset provided to unsupported image sample instruction");

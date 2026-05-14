@@ -55,6 +55,27 @@ public:
         VideoOut,
     };
 
+    struct MetaDataInfo {
+        enum class Type {
+            CMask,
+            FMask,
+            HTile,
+        };
+        Type type;
+        s32 clear_mask = -1;
+        ImageId owner_image_id{};
+        BindingType owner_binding = BindingType::Texture;
+        VAddr owner_guest_address{};
+        u32 owner_guest_size{};
+        Extent3D owner_size{};
+        u32 owner_pitch{};
+        vk::Format owner_format = vk::Format::eUndefined;
+        u32 owner_num_bits{};
+        u32 owner_num_samples{};
+        AmdGpu::TileMode owner_tile_mode = AmdGpu::TileMode::DisplayLinearAligned;
+        AmdGpu::ArrayMode owner_array_mode = AmdGpu::ArrayMode::ArrayLinearAligned;
+    };
+
     struct ImageDesc {
         ImageInfo info;
         ImageViewInfo view_info;
@@ -98,6 +119,9 @@ public:
 
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);
+
+    /// Gets or creates a null image for a particular format.
+    ImageId GetNullImage(vk::Format format);
 
     /// Retrieves image whose address matches provided
     [[nodiscard]] ImageId FindImageFromRange(VAddr address, size_t size, bool ensure_valid = true);
@@ -155,6 +179,12 @@ public:
     /// Returns true if the specified address is a metadata surface.
     bool IsMeta(VAddr address) const {
         return surface_metas.contains(address);
+    }
+
+    /// Returns metadata ownership details for the specified metadata surface.
+    const MetaDataInfo* FindMetaData(VAddr address) const {
+        const auto& it = surface_metas.find(address);
+        return it != surface_metas.end() ? &it.value() : nullptr;
     }
 
     /// Returns true if a slice of the specified metadata surface has been cleared.
@@ -251,9 +281,6 @@ private:
         }
     }
 
-    /// Gets or creates a null image for a particular format.
-    ImageId GetNullImage(vk::Format format);
-
     /// Copies image memory back to CPU.
     void DownloadImageMemory(ImageId image_id);
 
@@ -315,15 +342,6 @@ private:
     bool readback_linear_images;
     PageTable page_table;
     std::mutex mutex;
-    struct MetaDataInfo {
-        enum class Type {
-            CMask,
-            FMask,
-            HTile,
-        };
-        Type type;
-        s32 clear_mask = -1;
-    };
     tsl::robin_map<VAddr, MetaDataInfo> surface_metas;
 };
 

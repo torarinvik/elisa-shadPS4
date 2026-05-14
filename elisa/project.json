@@ -1,5 +1,6 @@
 {
   "version": "0.1.0",
+  "include-dirs": ["../../compiler/runtime/elisacore_std", "src", "test"],
   "foreign": ["native/shadps4_c_api.c"],
   "targets": {
     "app": {

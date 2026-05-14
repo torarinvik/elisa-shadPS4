@@ -2,8 +2,11 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <charconv>
+#include <cstdlib>
 #include <map>
 #include <string>
+#include <string_view>
 
 #include <fmt/format.h>
 
@@ -16,10 +19,27 @@
 
 namespace Shader::IR {
 
+static bool IsTargetShaderDumpEnabled(u64 hash) {
+    static const u64 target_hash = [] {
+        const char* value = std::getenv("SHADPS4_DUMP_SHADER_HASH");
+        if (value == nullptr || value[0] == '\0') {
+            return u64{};
+        }
+        std::string_view text{value};
+        if (text.starts_with("0x") || text.starts_with("0X")) {
+            text.remove_prefix(2);
+        }
+        u64 parsed{};
+        const auto [_, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed, 16);
+        return ec == std::errc{} ? parsed : u64{};
+    }();
+    return target_hash != 0 && target_hash == hash;
+}
+
 void DumpProgram(const Program& program, const Info& info, const std::string& type) {
     using namespace Common::FS;
 
-    if (!EmulatorSettings.IsDumpShaders()) {
+    if (!EmulatorSettings.IsDumpShaders() && !IsTargetShaderDumpEnabled(info.pgm_hash)) {
         return;
     }
 

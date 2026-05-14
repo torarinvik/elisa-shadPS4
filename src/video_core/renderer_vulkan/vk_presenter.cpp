@@ -6,6 +6,7 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
+#include "common/trace_control.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -130,6 +132,24 @@ enum class ScreenshotKind : u8 {
     WithOverlays,
 };
 
+static bool IsTraceRenderEnabled() {
+    return Common::Trace::IsAggressiveLoggingEnabled();
+}
+
+static u64 GetTraceVideoOutInterval() {
+    static const u64 interval = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_VIDEO_OUT_EVERY");
+        if (value == nullptr || value[0] == '\0') {
+            return 30ULL;
+        }
+
+        char* end{};
+        const auto parsed = std::strtoull(value, &end, 10);
+        return end != value && parsed > 0 ? parsed : 30ULL;
+    }();
+    return interval;
+}
+
 struct ScreenshotReadback {
     ScreenshotKind kind{};
     std::vector<std::filesystem::path> paths{};
@@ -173,7 +193,11 @@ static std::vector<std::filesystem::path> BuildScreenshotPaths(const ScreenshotK
         return paths;
     }
 
-    const auto& screenshots_dir = Common::FS::GetUserPath(Common::FS::PathType::ScreenshotsDir);
+    const char* trace_screenshot_dir = std::getenv("SHADPS4_TRACE_SCREENSHOT_DIR");
+    const auto screenshots_dir =
+        trace_screenshot_dir != nullptr && trace_screenshot_dir[0] != '\0'
+            ? std::filesystem::path{trace_screenshot_dir}
+            : Common::FS::GetUserPath(Common::FS::PathType::ScreenshotsDir);
     std::filesystem::create_directories(screenshots_dir);
 
     const auto game_id =
@@ -206,6 +230,14 @@ static std::vector<std::filesystem::path> BuildScreenshotPaths(const ScreenshotK
     }
 
     return paths;
+}
+
+static bool IsTraceScreenshotStatsOnly() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_SCREENSHOT_STATS_ONLY");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static float PqToNits(const float encoded) {
@@ -435,7 +467,41 @@ static bool WritePng(const std::filesystem::path& path, const std::span<const u8
     return true;
 }
 
+static void LogScreenshotStats(const std::filesystem::path& path, const std::span<const u8> rgba,
+                               const u32 width, const u32 height) {
+    if (rgba.empty()) {
+        return;
+    }
+
+    u64 luma_sum = 0;
+    u8 max_luma = 0;
+    u64 near_black_pixels = 0;
+    const u64 pixel_count = static_cast<u64>(width) * static_cast<u64>(height);
+    for (u64 i = 0; i < pixel_count; ++i) {
+        const size_t offset = static_cast<size_t>(i) * 4;
+        const u8 r = rgba[offset + 0];
+        const u8 g = rgba[offset + 1];
+        const u8 b = rgba[offset + 2];
+        const u8 luma = static_cast<u8>((static_cast<u32>(r) * 54 + static_cast<u32>(g) * 183 +
+                                         static_cast<u32>(b) * 19) >>
+                                        8);
+        luma_sum += luma;
+        max_luma = std::max(max_luma, luma);
+        if (luma <= 4) {
+            near_black_pixels++;
+        }
+    }
+
+    const double avg_luma = pixel_count == 0 ? 0.0 : static_cast<double>(luma_sum) / pixel_count;
+    const double near_black_pct =
+        pixel_count == 0 ? 0.0 : (100.0 * static_cast<double>(near_black_pixels)) / pixel_count;
+    LOG_INFO(Render_Vulkan,
+             "TRACE_SCREENSHOT path={} size={}x{} avg_luma={:.2f} max_luma={} near_black={:.2f}%",
+             path.string(), width, height, avg_luma, max_luma, near_black_pct);
+}
+
 static void SavePendingScreenshots(const std::vector<ScreenshotReadback>& readbacks) {
+    const bool stats_only = IsTraceScreenshotStatsOnly();
     for (const auto& readback : readbacks) {
         if (readback.paths.empty()) {
             continue;
@@ -447,12 +513,18 @@ static void SavePendingScreenshots(const std::vector<ScreenshotReadback>& readba
         }
 
         const auto& primary_path = readback.paths.front();
+        if (stats_only) {
+            LogScreenshotStats(primary_path, rgba, readback.width, readback.height);
+            continue;
+        }
+
         if (!WritePng(primary_path, rgba, readback.width, readback.height)) {
             LOG_ERROR(Render_Vulkan, "Failed saving screenshot to {}", primary_path.string());
             continue;
         }
 
         LOG_INFO(Render_Vulkan, "Saved screenshot: {}", primary_path.string());
+        LogScreenshotStats(primary_path, rgba, readback.width, readback.height);
 
         std::ifstream file(primary_path, std::ios::binary);
         std::vector<u8> imgdata;
@@ -477,6 +549,7 @@ static void SavePendingScreenshots(const std::vector<ScreenshotReadback>& readba
             }
 
             LOG_INFO(Render_Vulkan, "Saved screenshot: {}", path.string());
+            LogScreenshotStats(path, rgba, readback.width, readback.height);
             std::ifstream file(path, std::ios::binary);
             std::vector<u8> imgdata;
             if (file) {
@@ -686,6 +759,9 @@ static vk::Format GetFrameViewFormat(const Libraries::VideoOut::PixelFormat form
 
 Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
                                VAddr cpu_address) {
+    static std::atomic<u64> trace_video_out_frame{0};
+    static std::atomic<VAddr> trace_last_video_out_address{0};
+
     auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
     const auto image_id = texture_cache.FindImage(desc);
     texture_cache.UpdateImage(image_id);
@@ -727,6 +803,39 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     auto image_view = *image.FindView(view_info).image_view;
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
+
+    const auto frame_number = trace_video_out_frame.fetch_add(1, std::memory_order_relaxed);
+    const bool trace_video_out =
+        IsTraceRenderEnabled() &&
+        (frame_number % std::min<u64>(GetTraceVideoOutInterval(), 15ULL) == 0);
+    if (trace_video_out) {
+        const auto previous_address =
+            trace_last_video_out_address.exchange(cpu_address, std::memory_order_relaxed);
+        const u32 usage_texture = image.usage.texture;
+        const u32 usage_storage = image.usage.storage;
+        const u32 usage_render_target = image.usage.render_target;
+        const u32 usage_depth_target = image.usage.depth_target;
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_VIDEO_OUT frame={} cpu_addr={:#x} changed={} image_id={} guest_addr={:#x} "
+                 "guest_size={} attr={}x{} pitch={} format={} tiling={} option={:#x} image={}x{} "
+                 "vk_format={} tile_mode={} array_mode={} bits={} samples={} cmask={:#x} "
+                 "fmask={:#x} htile={:#x} flags={:#x} backing_samples={} backing_layout={} "
+                 "usage=t{}s{}rt{}dt{}",
+                 frame_number, cpu_address, previous_address != cpu_address, image_id.index,
+                 image.info.guest_address, image.info.guest_size, attribute.attrib.width,
+                 attribute.attrib.height, attribute.attrib.pitch_in_pixel,
+                 Libraries::VideoOut::GetPixelFormatString(attribute.attrib.pixel_format),
+                 attribute.attrib.tiling_mode == Libraries::VideoOut::TilingMode::Tile ? "tile"
+                                                                                       : "linear",
+                 attribute.attrib.option, image_size.width, image_size.height,
+                 vk::to_string(image.info.pixel_format), static_cast<u32>(image.info.tile_mode),
+                 static_cast<u32>(image.info.array_mode), image.info.num_bits,
+                 image.info.num_samples, image.info.meta_info.cmask_addr,
+                 image.info.meta_info.fmask_addr, image.info.meta_info.htile_addr,
+                 static_cast<u32>(image.flags), image.backing->num_samples,
+                 vk::to_string(image.backing->state.layout), usage_texture, usage_storage,
+                 usage_render_target, usage_depth_target);
+    }
 
     const u32 capture_game_only_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
     std::vector<ScreenshotReadback> pending_screenshots;

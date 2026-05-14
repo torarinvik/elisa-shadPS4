@@ -421,3 +421,5 @@ cmake-build-*
 
 # Nix Result symlink
 result
+/Games
+/screenshot_logs

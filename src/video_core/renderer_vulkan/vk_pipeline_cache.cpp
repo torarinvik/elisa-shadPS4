@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <charconv>
+#include <cstdlib>
 #include <ranges>
 
 #include "common/hash.h"
@@ -35,6 +37,23 @@ constexpr static std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1024},
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
 };
+
+static bool IsTargetShaderDumpEnabled(u64 hash) {
+    static const u64 target_hash = [] {
+        const char* value = std::getenv("SHADPS4_DUMP_SHADER_HASH");
+        if (value == nullptr || value[0] == '\0') {
+            return u64{};
+        }
+        std::string_view text{value};
+        if (text.starts_with("0x") || text.starts_with("0X")) {
+            text.remove_prefix(2);
+        }
+        u64 parsed{};
+        const auto [_, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed, 16);
+        return ec == std::errc{} ? parsed : u64{};
+    }();
+    return target_hash != 0 && target_hash == hash;
+}
 
 static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsOutputControl& ctl) {
     u32 num_outputs = 0;
@@ -726,7 +745,7 @@ std::string PipelineCache::GetShaderName(Shader::Stage stage, u64 hash,
 
 void PipelineCache::DumpShader(std::span<const u32> code, u64 hash, Shader::Stage stage,
                                size_t perm_idx, std::string_view ext) {
-    if (!EmulatorSettings.IsDumpShaders()) {
+    if (!EmulatorSettings.IsDumpShaders() && !IsTargetShaderDumpEnabled(hash)) {
         return;
     }
 

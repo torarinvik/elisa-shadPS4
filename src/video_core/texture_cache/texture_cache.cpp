@@ -3,6 +3,9 @@
 
 #include <xxhash.h>
 
+#include <cstdlib>
+#include <cstring>
+
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -21,6 +24,81 @@ namespace VideoCore {
 
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
+
+static bool IsTraceMetaDataRegisterEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_METADATA_REGISTER");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static const char* MetaTypeName(TextureCache::MetaDataInfo::Type type) {
+    switch (type) {
+    case TextureCache::MetaDataInfo::Type::CMask:
+        return "cmask";
+    case TextureCache::MetaDataInfo::Type::FMask:
+        return "fmask";
+    case TextureCache::MetaDataInfo::Type::HTile:
+        return "htile";
+    }
+    return "unknown";
+}
+
+static const char* BindingTypeName(TextureCache::BindingType type) {
+    switch (type) {
+    case TextureCache::BindingType::Texture:
+        return "texture";
+    case TextureCache::BindingType::Storage:
+        return "storage";
+    case TextureCache::BindingType::RenderTarget:
+        return "render_target";
+    case TextureCache::BindingType::DepthTarget:
+        return "depth_target";
+    case TextureCache::BindingType::VideoOut:
+        return "video_out";
+    }
+    return "unknown";
+}
+
+static TextureCache::MetaDataInfo MakeMetaDataInfo(TextureCache::MetaDataInfo::Type type,
+                                                   const Image& image, ImageId image_id,
+                                                   TextureCache::BindingType binding,
+                                                   s32 clear_mask = -1) {
+    return TextureCache::MetaDataInfo{
+        .type = type,
+        .clear_mask = clear_mask,
+        .owner_image_id = image_id,
+        .owner_binding = binding,
+        .owner_guest_address = image.info.guest_address,
+        .owner_guest_size = image.info.guest_size,
+        .owner_size = image.info.size,
+        .owner_pitch = image.info.pitch,
+        .owner_format = image.info.pixel_format,
+        .owner_num_bits = image.info.num_bits,
+        .owner_num_samples = image.info.num_samples,
+        .owner_tile_mode = image.info.tile_mode,
+        .owner_array_mode = image.info.array_mode,
+    };
+}
+
+static void LogMetaDataRegistration(VAddr address, const TextureCache::MetaDataInfo& meta,
+                                    const char* action) {
+    if (!IsTraceMetaDataRegisterEnabled()) {
+        return;
+    }
+    LOG_INFO(Render_Vulkan,
+             "TRACE_RENDER metadata_register addr={:#x} kind={} action={} owner_image={} "
+             "owner_binding={} guest_addr={:#x} guest_size={} size={}x{}x{} pitch={} "
+             "vk_format={} tile_mode={} array_mode={} bits={} samples={} clear_mask={:#x}",
+             address, MetaTypeName(meta.type), action, meta.owner_image_id.index,
+             BindingTypeName(meta.owner_binding), meta.owner_guest_address, meta.owner_guest_size,
+             meta.owner_size.width,
+             meta.owner_size.height, meta.owner_size.depth, meta.owner_pitch,
+             static_cast<u32>(meta.owner_format), static_cast<u32>(meta.owner_tile_mode),
+             static_cast<u32>(meta.owner_array_mode), meta.owner_num_bits, meta.owner_num_samples,
+             static_cast<u32>(meta.clear_mask));
+}
 
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            AmdGpu::Liverpool* liverpool_, BufferCache& buffer_cache_,
@@ -662,14 +740,20 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
 
     // Register meta data for this color buffer
     if (desc.info.meta_info.cmask_addr) {
-        surface_metas.emplace(desc.info.meta_info.cmask_addr,
-                              MetaDataInfo{.type = MetaDataInfo::Type::CMask});
+        auto meta = MakeMetaDataInfo(MetaDataInfo::Type::CMask, image, image_id, desc.type);
+        auto [it, inserted] = surface_metas.emplace(desc.info.meta_info.cmask_addr, meta);
+        if (inserted) {
+            LogMetaDataRegistration(desc.info.meta_info.cmask_addr, meta, "insert");
+        }
         image.info.meta_info.cmask_addr = desc.info.meta_info.cmask_addr;
     }
 
     if (desc.info.meta_info.fmask_addr) {
-        surface_metas.emplace(desc.info.meta_info.fmask_addr,
-                              MetaDataInfo{.type = MetaDataInfo::Type::FMask});
+        auto meta = MakeMetaDataInfo(MetaDataInfo::Type::FMask, image, image_id, desc.type);
+        auto [it, inserted] = surface_metas.emplace(desc.info.meta_info.fmask_addr, meta);
+        if (inserted) {
+            LogMetaDataRegistration(desc.info.meta_info.fmask_addr, meta, "insert");
+        }
         image.info.meta_info.fmask_addr = desc.info.meta_info.fmask_addr;
     }
 
@@ -684,9 +768,12 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
 
     // Register meta data for this depth buffer
     if (desc.info.meta_info.htile_addr) {
-        surface_metas.emplace(desc.info.meta_info.htile_addr,
-                              MetaDataInfo{.type = MetaDataInfo::Type::HTile,
-                                           .clear_mask = image.info.meta_info.htile_clear_mask});
+        auto meta = MakeMetaDataInfo(MetaDataInfo::Type::HTile, image, image_id, desc.type,
+                                     image.info.meta_info.htile_clear_mask);
+        auto [it, inserted] = surface_metas.emplace(desc.info.meta_info.htile_addr, meta);
+        if (inserted) {
+            LogMetaDataRegistration(desc.info.meta_info.htile_addr, meta, "insert");
+        }
         image.info.meta_info.htile_addr = desc.info.meta_info.htile_addr;
     }
 

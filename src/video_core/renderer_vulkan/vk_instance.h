@@ -367,6 +367,9 @@ public:
 
     /// Returns the maximum number of push descriptors.
     u32 MaxPushDescriptors() const {
+        if (driver_id == vk::DriverId::eMoltenvk) {
+            return 0;
+        }
         return push_descriptor_props.maxPushDescriptors;
     }
 

@@ -9,6 +9,7 @@
 #include "SDL3/SDL_video.h"
 #include "common/assert.h"
 #include "common/elf_info.h"
+#include "common/trace_control.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -22,6 +23,10 @@
 #include "input/input_mouse.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
+
+#include <array>
+#include <cstdlib>
+#include <string_view>
 
 #ifdef __APPLE__
 #include "SDL3/SDL_metal.h"
@@ -69,6 +74,58 @@ static OrbisPadButtonDataOffset SDLGamepadToOrbisButton(u8 button) {
     default:
         return OPBDO::None;
     }
+}
+
+static bool IsTraceInputEnabled() {
+    const char* value = std::getenv("SHADPS4_TRACE_INPUT");
+    return value != nullptr && value[0] != '\0' && std::string_view{value} != "0";
+}
+
+static const char* OrbisButtonName(OrbisPadButtonDataOffset button) {
+    using OPBDO = OrbisPadButtonDataOffset;
+    switch (button) {
+    case OPBDO::Down:
+        return "dpad_down";
+    case OPBDO::Up:
+        return "dpad_up";
+    case OPBDO::Left:
+        return "dpad_left";
+    case OPBDO::Right:
+        return "dpad_right";
+    case OPBDO::Cross:
+        return "cross";
+    case OPBDO::Circle:
+        return "circle";
+    case OPBDO::Square:
+        return "square";
+    case OPBDO::Triangle:
+        return "triangle";
+    case OPBDO::L1:
+        return "l1";
+    case OPBDO::R1:
+        return "r1";
+    case OPBDO::L3:
+        return "l3";
+    case OPBDO::R3:
+        return "r3";
+    case OPBDO::Options:
+        return "options";
+    case OPBDO::TouchPad:
+        return "touchpad";
+    default:
+        return "none";
+    }
+}
+
+static int AxisTraceBucket(const Sint16 value) {
+    constexpr Sint16 dead_zone = 6000;
+    if (value > dead_zone) {
+        return 1;
+    }
+    if (value < -dead_zone) {
+        return -1;
+    }
+    return 0;
 }
 
 static Uint32 SDLCALL PollController(void* userdata, SDL_TimerID timer_id, Uint32 interval) {
@@ -347,6 +404,40 @@ void WindowSDL::OnKeyboardMouseInput(const SDL_Event* event) {
                             event->type == SDL_EVENT_MOUSE_WHEEL;
     Input::InputEvent input_event = Input::InputBinding::GetInputEventFromSDLEvent(*event);
 
+    if (IsTraceInputEnabled()) {
+        switch (event->type) {
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP:
+            if (!event->key.repeat) {
+                LOG_INFO(Input, "TRACE_INPUT keyboard {} key={} scancode={}",
+                         event->type == SDL_EVENT_KEY_DOWN ? "down" : "up",
+                         SDL_GetKeyName(event->key.key), static_cast<u32>(event->key.scancode));
+            }
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            LOG_INFO(Input, "TRACE_INPUT mouse_button {} button={}",
+                     event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? "down" : "up",
+                     event->button.button);
+            break;
+        case SDL_EVENT_MOUSE_WHEEL:
+            LOG_INFO(Input, "TRACE_INPUT mouse_wheel x={} y={}", event->wheel.x, event->wheel.y);
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) {
+        if (event->key.scancode == SDL_SCANCODE_F10) {
+            Common::Trace::SetAggressiveLoggingEnabled(true);
+            LOG_INFO(Input, "TRACE_CONTROL aggressive_logging enabled");
+        } else if (event->key.scancode == SDL_SCANCODE_F9) {
+            Common::Trace::SetAggressiveLoggingEnabled(false);
+            LOG_INFO(Input, "TRACE_CONTROL aggressive_logging disabled");
+        }
+    }
+
     // if it's a wheel event, make a timer that turns it off after a set time
     if (event->type == SDL_EVENT_MOUSE_WHEEL) {
         const SDL_Event* copy = new SDL_Event(*event);
@@ -366,17 +457,24 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     bool input_down = event->type == SDL_EVENT_GAMEPAD_AXIS_MOTION ||
                       event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
     Input::InputEvent input_event = Input::InputBinding::GetInputEventFromSDLEvent(*event);
+    const bool trace_input = IsTraceInputEnabled();
 
     // the touchpad button shouldn't be rebound to anything else,
     // as it would break the entire touchpad handling
     // You can still bind other things to it though
     if (event->gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
+        if (trace_input) {
+            LOG_INFO(Input, "TRACE_INPUT gamepad_button {} joystick={} sdl_button={} mapped={}",
+                     input_down ? "down" : "up", event->gbutton.which, event->gbutton.button,
+                     OrbisButtonName(OrbisPadButtonDataOffset::TouchPad));
+        }
         controllers[controllers.GetGamepadIndexFromJoystickId(event->gbutton.which)]->Button(
             OrbisPadButtonDataOffset::TouchPad, input_down);
         return;
     }
 
     u8 gamepad;
+    static std::array<std::array<int, SDL_GAMEPAD_AXIS_COUNT>, 16> axis_trace_buckets{};
 
     switch (event->type) {
     case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
@@ -400,6 +498,12 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+        if (trace_input && event->type != SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) {
+            LOG_INFO(Input, "TRACE_INPUT gamepad_touchpad {} joystick={} finger={} x={} y={}",
+                     event->type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN ? "down" : "up",
+                     event->gtouchpad.which, event->gtouchpad.finger, event->gtouchpad.x,
+                     event->gtouchpad.y);
+        }
         controllers[controllers.GetGamepadIndexFromJoystickId(event->gtouchpad.which)]
             ->SetTouchpadState(event->gtouchpad.finger,
                                event->type != SDL_EVENT_GAMEPAD_TOUCHPAD_UP, event->gtouchpad.x,
@@ -407,6 +511,35 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
         return;
     default:
         break;
+    }
+
+    if (trace_input) {
+        if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+            event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+            const auto mapped = SDLGamepadToOrbisButton(event->gbutton.button);
+            LOG_INFO(Input, "TRACE_INPUT gamepad_button {} joystick={} sdl_button={} sdl_name={} "
+                            "mapped={}",
+                     event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "down" : "up",
+                     event->gbutton.which, event->gbutton.button,
+                     SDL_GetGamepadStringForButton(
+                         static_cast<SDL_GamepadButton>(event->gbutton.button)),
+                     OrbisButtonName(mapped));
+        } else if (event->type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
+                   event->gaxis.axis < SDL_GAMEPAD_AXIS_COUNT) {
+            const auto joystick_index =
+                static_cast<size_t>(event->gaxis.which % axis_trace_buckets.size());
+            const auto axis_index = static_cast<size_t>(event->gaxis.axis);
+            const int bucket = AxisTraceBucket(event->gaxis.value);
+            if (bucket != axis_trace_buckets[joystick_index][axis_index]) {
+                axis_trace_buckets[joystick_index][axis_index] = bucket;
+                LOG_INFO(Input, "TRACE_INPUT gamepad_axis joystick={} axis={} name={} value={} "
+                                "bucket={}",
+                         event->gaxis.which, event->gaxis.axis,
+                         SDL_GetGamepadStringForAxis(
+                             static_cast<SDL_GamepadAxis>(event->gaxis.axis)),
+                         event->gaxis.value, bucket);
+            }
+        }
     }
 
     // add/remove it from the list

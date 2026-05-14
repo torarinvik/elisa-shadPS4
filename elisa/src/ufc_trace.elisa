@@ -1,0 +1,248 @@
+permission Sys:
+    FFI
+
+permission SysProcess:
+    Spawn
+    Kill
+
+permission SysEnv:
+    Write
+
+permission SysMemory:
+    Read
+    Foreign
+
+permission FS:
+    Read
+    Write
+
+permission Clock:
+    Read
+
+extern shadps4_elisa_find_ufc1(out_path: mutable u8&, out_path_cap: u64) -> int can[Sys.FFI, FS.Read]
+extern shadps4_elisa_run_ufc_trace(root_dir: cstr, profile: cstr, timeout_ms: u32, out_log_path: mutable u8&, out_log_path_cap: u64, out_exit_code: mutable int&, out_timed_out: mutable int&) -> int can[Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read]
+extern shadps4_elisa_read_file(path: cstr) -> cstr can[Sys.FFI, FS.Read, SysMemory.Foreign]
+extern shadps4_elisa_last_log_path() -> cstr can[Sys.FFI]
+extern shadps4_elisa_last_error() -> cstr can[Sys.FFI]
+extern printf(format: u8&, ...) -> int can[Console.Write]
+
+struct GameId:
+    text: cstr
+
+struct TraceProfile:
+    name: cstr
+    timeout_ms: u32
+
+struct TraceRun:
+    game: GameId
+    profile: TraceProfile
+    log_path: cstr
+    exit_code: int
+    timed_out: bool
+
+struct TraceResult:
+    ok: bool
+    run: TraceRun
+    render: RenderCheckpoint
+    error_message: cstr
+
+struct RenderCheckpoint:
+    line_count: mutable i64
+    last_videoout_stage: mutable i64
+    last_render_pass: mutable i64
+    last_depth_pass: mutable i64
+    image_binding_count: mutable i64
+    render_target_count: mutable i64
+    depth_target_count: mutable i64
+    fmask_decompress_count: mutable i64
+    metadata_texture_read_count: mutable i64
+    last_fmask_addr: mutable i64
+    last_cmask_addr: mutable i64
+    last_htile_addr: mutable i64
+
+def ufc1_game_id() -> GameId:
+    return GameId("CUSA00264")
+
+def baseline_safe_profile() -> TraceProfile:
+    return TraceProfile("baseline-safe", 8000)
+
+def fmask_null_read_profile() -> TraceProfile:
+    return TraceProfile("fmask-null-read", 8000)
+
+def fmask_in_place_profile() -> TraceProfile:
+    return TraceProfile("fmask-in-place", 8000)
+
+def compositor_null_layer_profile() -> TraceProfile:
+    return TraceProfile("compositor-null-layer", 8000)
+
+def videoout_unorm_profile() -> TraceProfile:
+    return TraceProfile("videoout-unorm", 8000)
+
+def empty_checkpoint() -> RenderCheckpoint:
+    return RenderCheckpoint(0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0)
+
+def trace_byte_at(text: cstr, index: i64) -> u8:
+    trusted Unsafe.UncheckedIndex:
+        return text[index.usize()]
+
+def trace_cstr_len(text: cstr) -> i64:
+    index: mutable i64 = 0
+    while trace_byte_at(text, index) != 0:
+        index <- index + 1
+    return index
+
+def trace_line_contains(text: cstr, start: i64, end: i64, needle: cstr) -> bool:
+    needle_len: i64 = trace_cstr_len(needle)
+    if needle_len <= 0:
+        return true
+    if end - start < needle_len:
+        return false
+    pos: mutable i64 = start
+    while pos + needle_len <= end:
+        offset: mutable i64 = 0
+        matched: mutable bool = true
+        while offset < needle_len and matched:
+            if trace_byte_at(text, pos + offset) != trace_byte_at(needle, offset):
+                matched <- false
+            else:
+                offset <- offset + 1
+        if matched:
+            return true
+        pos <- pos + 1
+    return false
+
+def trace_find_marker(text: cstr, start: i64, end: i64, marker: cstr) -> i64:
+    marker_len: i64 = trace_cstr_len(marker)
+    if marker_len <= 0 or end - start < marker_len:
+        return -1
+    pos: mutable i64 = start
+    while pos + marker_len <= end:
+        offset: mutable i64 = 0
+        matched: mutable bool = true
+        while offset < marker_len and matched:
+            if trace_byte_at(text, pos + offset) != trace_byte_at(marker, offset):
+                matched <- false
+            else:
+                offset <- offset + 1
+        if matched:
+            return pos
+        pos <- pos + 1
+    return -1
+
+def trace_is_digit(ch: u8) -> bool:
+    return ch >= '0' and ch <= '9'
+
+def trace_hex_value(ch: u8) -> i64:
+    if ch >= '0' and ch <= '9':
+        return (ch - '0').i64()
+    if ch >= 'a' and ch <= 'f':
+        return (ch - 'a').i64() + 10
+    if ch >= 'A' and ch <= 'F':
+        return (ch - 'A').i64() + 10
+    return -1
+
+def trace_decimal_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i64) -> i64:
+    marker_pos: i64 = trace_find_marker(text, start, end, marker)
+    if marker_pos < 0:
+        return fallback
+    pos: mutable i64 = marker_pos + trace_cstr_len(marker)
+    value: mutable i64 = 0
+    seen: mutable bool = false
+    while pos < end and trace_is_digit(trace_byte_at(text, pos)):
+        value <- value * 10 + (trace_byte_at(text, pos) - '0').i64()
+        seen <- true
+        pos <- pos + 1
+    return value if seen else fallback
+
+def trace_hex_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i64) -> i64:
+    marker_pos: i64 = trace_find_marker(text, start, end, marker)
+    if marker_pos < 0:
+        return fallback
+    pos: mutable i64 = marker_pos + trace_cstr_len(marker)
+    if pos + 2 <= end and trace_byte_at(text, pos) == '0' and trace_byte_at(text, pos + 1) == 'x':
+        pos <- pos + 2
+    value: mutable i64 = 0
+    seen: mutable bool = false
+    scanning: mutable bool = true
+    while pos < end and scanning:
+        digit: i64 = trace_hex_value(trace_byte_at(text, pos))
+        if digit < 0:
+            scanning <- false
+        else:
+            value <- value * 16 + digit
+            seen <- true
+            pos <- pos + 1
+    return value if seen else fallback
+
+def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    if not trace_line_contains(text, start, end, "TRACE_RENDER"):
+        return
+    if trace_line_contains(text, start, end, "TRACE_RENDER image_binding"):
+        summary.image_binding_count <- summary.image_binding_count + 1
+        summary.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.last_videoout_stage)
+    if trace_line_contains(text, start, end, "TRACE_RENDER render_target"):
+        summary.render_target_count <- summary.render_target_count + 1
+        summary.last_render_pass <- trace_decimal_after(text, start, end, "pass=", summary.last_render_pass)
+        summary.last_fmask_addr <- trace_hex_after(text, start, end, "fmask=", summary.last_fmask_addr)
+        summary.last_cmask_addr <- trace_hex_after(text, start, end, "cmask=", summary.last_cmask_addr)
+    if trace_line_contains(text, start, end, "TRACE_RENDER depth_target"):
+        summary.depth_target_count <- summary.depth_target_count + 1
+        summary.last_depth_pass <- trace_decimal_after(text, start, end, "pass=", summary.last_depth_pass)
+        summary.last_htile_addr <- trace_hex_after(text, start, end, "htile=", summary.last_htile_addr)
+    if trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress"):
+        summary.fmask_decompress_count <- summary.fmask_decompress_count + 1
+    if trace_line_contains(text, start, end, "TRACE_RENDER metadata_texture_read"):
+        summary.metadata_texture_read_count <- summary.metadata_texture_read_count + 1
+
+def ufc_trace_analyze_text(log_text: cstr) -> RenderCheckpoint:
+    summary: mutable RenderCheckpoint = empty_checkpoint()
+    text_len: i64 = trace_cstr_len(log_text)
+    start: mutable i64 = 0
+    index: mutable i64 = 0
+    while index <= text_len:
+        if index == text_len or trace_byte_at(log_text, index) == '\n':
+            summary.line_count <- summary.line_count + 1
+            ufc_trace_analyze_line(summary, log_text, start, index)
+            start <- index + 1
+        index <- index + 1
+    return summary
+
+def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+    game: GameId = ufc1_game_id()
+    log_path_buffer: mutable u8[1024] = zeroed
+    exit_code: mutable int = -1
+    timed_out_value: mutable int = 0
+    ok_value: mutable int = 0
+    can Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read:
+        ok_value <- shadps4_elisa_run_ufc_trace(root_dir, profile.name, profile.timeout_ms, log_path_buffer[0].ref[mutable u8&], 1024, exit_code.ref[mutable int&], timed_out_value.ref[mutable int&])
+    native_error: mutable cstr = ""
+    can Sys.FFI:
+        native_error <- shadps4_elisa_last_error()
+    log_text: mutable cstr = ""
+    can Sys.FFI, FS.Read, SysMemory.Foreign:
+        log_text <- shadps4_elisa_read_file(log_path_buffer[0].ref[u8&])
+    summary: RenderCheckpoint = ufc_trace_analyze_text(log_text)
+    last_log_path: mutable cstr = ""
+    can Sys.FFI:
+        last_log_path <- shadps4_elisa_last_log_path()
+    run: TraceRun = TraceRun(game, profile, last_log_path, exit_code, timed_out_value != 0)
+    return TraceResult(ok_value != 0, run, summary, native_error)
+
+def ufc_trace_run_baseline_safe(root_dir: cstr) -> TraceResult can[Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+    result: mutable TraceResult = zeroed
+    can Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
+        result <- ufc_trace_run_profile(root_dir, baseline_safe_profile())
+    return result
+
+def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
+    can Console.Write:
+        printf("profile=%s\n", result.run.profile.name)
+        printf("game=%s\n", result.run.game.text)
+        printf("log=%s\n", result.run.log_path)
+        printf("exit_code=%d timed_out=%d ok=%d\n", result.run.exit_code, 1 if result.run.timed_out else 0, 1 if result.ok else 0)
+        if not result.ok:
+            printf("error=%s\n", result.error_message)
+        printf("lines=%lld image_bindings=%lld render_targets=%lld depth_targets=%lld\n", result.render.line_count, result.render.image_binding_count, result.render.render_target_count, result.render.depth_target_count)
+        printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
+        printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
+        printf("fmask_decompress=%lld metadata_texture_reads=%lld\n", result.render.fmask_decompress_count, result.render.metadata_texture_read_count)
