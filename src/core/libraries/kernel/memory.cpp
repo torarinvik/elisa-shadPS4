@@ -227,7 +227,11 @@ s32 PS4_SYSV_ABI sceKernelMapNamedDirectMemory(void** addr, u64 len, s32 prot, s
         memory->MapMemory(addr, in_addr, len, mem_prot, map_flags, Core::VMAType::Direct, name,
                           should_check, phys_addr, alignment);
 
-    LOG_INFO(Kernel_Vmm, "out_addr = {}", fmt::ptr(*addr));
+    if (ret == ORBIS_OK) {
+        LOG_INFO(Kernel_Vmm, "out_addr = {}", fmt::ptr(*addr));
+    } else {
+        LOG_ERROR(Kernel_Vmm, "sceKernelMapNamedDirectMemory failed with {:#x}", ret);
+    }
     return ret;
 }
 

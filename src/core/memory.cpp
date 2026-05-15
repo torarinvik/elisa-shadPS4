@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/alignment.h"
+#include "common/arch.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/elf_info.h"
@@ -14,6 +15,22 @@
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 namespace Core {
+
+static void LogInvalidFixedMapping(VAddr virtual_addr, u64 size, std::string_view kind) {
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+    static constexpr VAddr AppleGpuReservedStart = 0x1000000000ULL;
+    static constexpr VAddr AppleGpuReservedEnd = 0x7000000000ULL;
+    if (virtual_addr < AppleGpuReservedEnd && virtual_addr + size > AppleGpuReservedStart) {
+        LOG_ERROR(Kernel_Vmm,
+                  "Unable to map {} {:#x} bytes at address {:#x}: range overlaps the macOS "
+                  "x86_64-on-Apple-Silicon GPU-reserved address hole {:#x}-{:#x}",
+                  kind, size, virtual_addr, AppleGpuReservedStart, AppleGpuReservedEnd - 1);
+        return;
+    }
+#endif
+    LOG_ERROR(Kernel_Vmm, "Unable to map {} {:#x} bytes at address {:#x}", kind, size,
+              virtual_addr);
+}
 
 MemoryManager::MemoryManager() {
     LOG_INFO(Kernel_Vmm, "Virtual memory space initialized with regions:");
@@ -546,8 +563,10 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
 
     if (True(flags & MemoryMapFlags::Fixed) && True(flags & MemoryMapFlags::NoOverwrite)) {
         // Perform necessary error checking for Fixed & NoOverwrite case
-        ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
-                   virtual_addr);
+        if (!IsValidMapping(virtual_addr, size)) {
+            LogInvalidFixedMapping(virtual_addr, size, "fixed");
+            return ORBIS_KERNEL_ERROR_ENOMEM;
+        }
         auto vma = FindVMA(virtual_addr)->second;
         auto remaining_size = vma.base + vma.size - virtual_addr;
         if (!vma.IsFree() || remaining_size < size) {
@@ -721,8 +740,10 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
     }
 
     if (True(flags & MemoryMapFlags::Fixed) && True(flags & MemoryMapFlags::NoOverwrite)) {
-        ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
-                   virtual_addr);
+        if (!IsValidMapping(virtual_addr, size)) {
+            LogInvalidFixedMapping(virtual_addr, size, "fixed file");
+            return ORBIS_KERNEL_ERROR_ENOMEM;
+        }
         auto vma = FindVMA(virtual_addr)->second;
 
         auto remaining_size = vma.base + vma.size - virtual_addr;
