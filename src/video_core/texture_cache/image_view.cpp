@@ -19,6 +19,12 @@ static bool IsStrictRenderValidationEnabled() {
     return enabled;
 }
 
+static bool IsImageViewInvariantTraceEnabled() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_TRACE_IMAGE_VIEW_INVARIANTS");
+    return enabled || IsStrictRenderValidationEnabled();
+}
+
 vk::ImageViewType ConvertImageViewType(AmdGpu::ImageType type) {
     switch (type) {
     case AmdGpu::ImageType::Color1D:
@@ -130,6 +136,42 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
             .layerCount = info.range.extent.layers,
         },
     };
+    const u32 end_level = info.range.base.level + info.range.extent.levels;
+    const u32 end_layer = info.range.base.layer + info.range.extent.layers;
+    const bool empty_range = info.range.extent.levels == 0 || info.range.extent.layers == 0;
+    const bool oob_range =
+        end_level > image.info.resources.levels || end_layer > image.info.resources.layers;
+    if (IsImageViewInvariantTraceEnabled() || empty_range || oob_range) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_IMAGE_VIEW invariant guest_addr={:#x} guest_size={} image_type={} "
+                 "view_type={} image_format={} view_format={} actual_view_format={} "
+                 "usage_storage={} image_levels={} image_layers={} base_level={} levels={} "
+                 "end_level={} base_layer={} layers={} end_layer={} aspect={} swizzle={}{}{}{} "
+                 "empty_range={} oob_range={}",
+                 image.info.guest_address, image.info.guest_size,
+                 magic_enum::enum_name(image.info.type), magic_enum::enum_name(info.type),
+                 vk::to_string(image.info.pixel_format), vk::to_string(info.format),
+                 vk::to_string(image_view_ci.format), info.is_storage, image.info.resources.levels,
+                 image.info.resources.layers, info.range.base.level, info.range.extent.levels,
+                 end_level, info.range.base.layer, info.range.extent.layers, end_layer,
+                 vk::to_string(aspect), static_cast<u32>(info.mapping.r),
+                 static_cast<u32>(info.mapping.g), static_cast<u32>(info.mapping.b),
+                 static_cast<u32>(info.mapping.a), empty_range, oob_range);
+    }
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() || !empty_range,
+               "Strict render validation: image view has empty subresource range guest_addr={:#x} "
+               "guest_size={} image_levels={} image_layers={} base_level={} levels={} "
+               "base_layer={} layers={}",
+               image.info.guest_address, image.info.guest_size, image.info.resources.levels,
+               image.info.resources.layers, info.range.base.level, info.range.extent.levels,
+               info.range.base.layer, info.range.extent.layers);
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() || !oob_range,
+               "Strict render validation: image view has out-of-bounds subresource range "
+               "guest_addr={:#x} guest_size={} image_levels={} image_layers={} base_level={} "
+               "levels={} end_level={} base_layer={} layers={} end_layer={}",
+               image.info.guest_address, image.info.guest_size, image.info.resources.levels,
+               image.info.resources.layers, info.range.base.level, info.range.extent.levels,
+               end_level, info.range.base.layer, info.range.extent.layers, end_layer);
     if (!IsViewTypeCompatible(info.type, image.info.type)) {
         LOG_ERROR(Render_Vulkan, "image view type {} is incompatible with image type {}",
                   magic_enum::enum_name(info.type), magic_enum::enum_name(image.info.type));

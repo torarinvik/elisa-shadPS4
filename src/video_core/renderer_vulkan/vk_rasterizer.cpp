@@ -1060,6 +1060,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
             auto& image = texture_cache.GetImage(image_id);
             auto& image_view = texture_cache.FindTexture(image_id, desc);
+            const auto view_base_level = desc.view_info.range.base.level;
+            const auto view_levels = desc.view_info.range.extent.levels;
+            const auto view_end_level = view_base_level + view_levels;
+            const auto view_base_layer = desc.view_info.range.base.layer;
+            const auto view_layers = desc.view_info.range.extent.layers;
+            const auto view_end_layer = view_base_layer + view_layers;
+            const bool empty_view_range = view_levels == 0 || view_layers == 0;
+            const bool oob_view_range = view_end_level > image.info.resources.levels ||
+                                        view_end_layer > image.info.resources.layers;
 
             // The image is either bound as storage in a separate descriptor or bound as render
             // target in feedback loop. Depth images are excluded because they can't be bound as
@@ -1097,6 +1106,56 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                                      image.backing->state.layout);
 
             const bool is_videoout_storage = is_storage && IsLikelyVideoOutStorageImage(image);
+            const bool trace_invariant =
+                is_videoout_storage || trace_stage_has_videoout_storage || empty_view_range ||
+                oob_view_range ||
+                Common::Trace::EnvEnabled("SHADPS4_TRACE_IMAGE_VIEW_INVARIANTS");
+            if (trace_invariant) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_RENDER image_binding_invariant videoout_stage={} binding_index={} "
+                         "stage={} pgm={:#x} descriptor={} is_videoout_storage={} image_id={} "
+                         "guest_addr={:#x} guest_size={} image_size={}x{}x{} image_levels={} "
+                         "image_layers={} image_type={} image_format={} view_type={} "
+                         "view_format={} backing_samples={} layout={} desc_addr={:#x} "
+                         "desc_size={}x{}x{} desc_pitch={} desc_base_array={} desc_mips={} "
+                         "view_base_level={} view_levels={} view_end_level={} "
+                         "view_base_layer={} view_layers={} view_end_layer={} swizzle={}{}{}{} "
+                         "empty_range={} oob_range={}",
+                         trace_videoout_stage_index, trace_image_binding_idx, stage.stage,
+                         stage.pgm_hash, BindingTypeName(desc.type), is_videoout_storage,
+                         image_id.index, image.info.guest_address, image.info.guest_size,
+                         image.info.size.width, image.info.size.height, image.info.size.depth,
+                         image.info.resources.levels, image.info.resources.layers,
+                         static_cast<u32>(image.info.type), vk::to_string(image.info.pixel_format),
+                         static_cast<u32>(desc.view_info.type), vk::to_string(desc.view_info.format),
+                         image.backing ? image.backing->num_samples : 0,
+                         image.backing ? vk::to_string(image.backing->state.layout) : "Undefined",
+                         desc.info.guest_address, desc.info.size.width, desc.info.size.height,
+                         desc.info.size.depth, desc.info.pitch, desc.info.base_array,
+                         desc.info.NumLevels(), view_base_level, view_levels, view_end_level,
+                         view_base_layer, view_layers, view_end_layer,
+                         static_cast<u32>(desc.view_info.mapping.r),
+                         static_cast<u32>(desc.view_info.mapping.g),
+                         static_cast<u32>(desc.view_info.mapping.b),
+                         static_cast<u32>(desc.view_info.mapping.a), empty_view_range,
+                         oob_view_range);
+            }
+            ASSERT_MSG(!IsStrictRenderValidationEnabled() || !empty_view_range,
+                       "Strict render validation: image binding has empty view range stage={} "
+                       "pgm={:#x} binding={} descriptor={} image_id={} guest_addr={:#x} "
+                       "base_level={} levels={} base_layer={} layers={}",
+                       stage.stage, stage.pgm_hash, trace_image_binding_idx,
+                       BindingTypeName(desc.type), image_id.index, image.info.guest_address,
+                       view_base_level, view_levels, view_base_layer, view_layers);
+            ASSERT_MSG(!IsStrictRenderValidationEnabled() || !oob_view_range,
+                       "Strict render validation: image binding view range exceeds image "
+                       "subresources stage={} pgm={:#x} binding={} descriptor={} image_id={} "
+                       "guest_addr={:#x} image_levels={} image_layers={} base_level={} levels={} "
+                       "end_level={} base_layer={} layers={} end_layer={}",
+                       stage.stage, stage.pgm_hash, trace_image_binding_idx,
+                       BindingTypeName(desc.type), image_id.index, image.info.guest_address,
+                       image.info.resources.levels, image.info.resources.layers, view_base_level,
+                       view_levels, view_end_level, view_base_layer, view_layers, view_end_layer);
             if (is_videoout_storage) {
                 Common::Trace::RecordVideoOutWrite(
                     "BindStorageVideoOut", image.info.guest_address, image.info.guest_size,
@@ -1129,8 +1188,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                              "tile_mode={} array_mode={} bits={} info_samples={} "
                              "backing_samples={} layout={} flags={:#x} usage=t{}s{}rt{}dt{}vo{} "
                              "desc_guest_addr={:#x} desc_size={}x{}x{} desc_pitch={} "
-                             "desc_vk_format={} desc_samples={} range_level={} range_levels={} "
-                             "range_slice={} range_slices={}",
+                             "desc_vk_format={} desc_samples={} image_levels={} image_layers={} "
+                             "view_type={} range_level={} range_levels={} range_end_level={} "
+                             "range_slice={} range_slices={} range_end_slice={} swizzle={}{}{}{}",
                              count, trace_videoout_stage_index, trace_image_binding_idx,
                              stage.stage, stage.pgm_hash, BindingTypeName(desc.type),
                              is_videoout_storage, image_id.index, image.info.guest_address,
@@ -1144,8 +1204,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                              usage_dt, usage_vo, desc.info.guest_address, desc.info.size.width,
                              desc.info.size.height, desc.info.size.depth, desc.info.pitch,
                              vk::to_string(desc.info.pixel_format), desc.info.num_samples,
-                             desc.view_info.range.base.level, desc.view_info.range.extent.levels,
-                             desc.view_info.range.base.layer, desc.view_info.range.extent.layers);
+                             image.info.resources.levels, image.info.resources.layers,
+                             static_cast<u32>(desc.view_info.type), view_base_level, view_levels,
+                             view_end_level, view_base_layer, view_layers, view_end_layer,
+                             static_cast<u32>(desc.view_info.mapping.r),
+                             static_cast<u32>(desc.view_info.mapping.g),
+                             static_cast<u32>(desc.view_info.mapping.b),
+                             static_cast<u32>(desc.view_info.mapping.a));
                 }
             }
         }
