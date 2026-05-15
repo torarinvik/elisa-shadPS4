@@ -163,6 +163,15 @@ struct FmaskMetadataClass:
     reason: cstr
     suspicious: bool
 
+struct BlackScreenDiagnosis:
+    kind: i64
+    label: cstr
+    reason: cstr
+    likely_origin: cstr
+    last_writer_label: cstr
+    recommended_action: cstr
+    avoid_long_run: bool
+
 def metadata_kind_unknown() -> i64:
     return 0
 
@@ -251,6 +260,24 @@ def black_watchdog_writer_copy_buffer_src() -> i64:
     return 4
 
 def black_watchdog_writer_invalidate_gpu() -> i64:
+    return 5
+
+def black_screen_kind_absent() -> i64:
+    return 0
+
+def black_screen_kind_upstream_guest_black() -> i64:
+    return 1
+
+def black_screen_kind_vulkan_source_black() -> i64:
+    return 2
+
+def black_screen_kind_compositor_or_swapchain() -> i64:
+    return 3
+
+def black_screen_kind_watchdog_abort() -> i64:
+    return 4
+
+def black_screen_kind_unclassified() -> i64:
     return 5
 
 def ufc1_game_id() -> GameId:
@@ -465,6 +492,28 @@ def trace_black_watchdog_writer(text: cstr, start: i64, end: i64) -> i64:
     if trace_line_contains(text, start, end, "last_writer=InvalidateMemoryFromGPU"):
         return black_watchdog_writer_invalidate_gpu()
     return black_watchdog_writer_unknown()
+
+def black_watchdog_stage_label(stage: i64) -> cstr:
+    if stage == black_watchdog_stage_gameonly():
+        return "GameOnly"
+    if stage == black_watchdog_stage_frameimage():
+        return "FrameImage"
+    if stage == black_watchdog_stage_withoverlays():
+        return "WithOverlays"
+    return "unknown"
+
+def black_watchdog_writer_label(writer: i64) -> cstr:
+    if writer == black_watchdog_writer_bind_storage_videoout():
+        return "BindStorageVideoOut"
+    if writer == black_watchdog_writer_fill_buffer():
+        return "FillBuffer"
+    if writer == black_watchdog_writer_copy_buffer_dst():
+        return "CopyBufferDst"
+    if writer == black_watchdog_writer_copy_buffer_src():
+        return "CopyBufferSrc"
+    if writer == black_watchdog_writer_invalidate_gpu():
+        return "InvalidateMemoryFromGPU"
+    return "unknown"
 
 def ufc_trace_mark_suspicious(summary: mutable RenderCheckpoint&, pass_index: i64) -> void:
     summary.suspicious_score <- summary.suspicious_score + 1
@@ -739,6 +788,68 @@ def ufc_trace_fmask_risk(summary: RenderCheckpoint) -> FmaskRisk:
         return FmaskRisk(score, fmask_risk_medium(), "medium", reason, ufc_trace_recommended_profile(summary), true)
     return FmaskRisk(score, fmask_risk_low(), "low", reason, ufc_trace_recommended_profile(summary), false)
 
+def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDiagnosis:
+    writer_label: cstr = black_watchdog_writer_label(summary.last_black_watchdog_last_writer)
+    if summary.black_watchdog_count == 0:
+        return BlackScreenDiagnosis(
+            black_screen_kind_absent(),
+            "absent",
+            "no strict black-screen watchdog evidence was present in the analyzed log",
+            "none",
+            writer_label,
+            "run with SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG=1 and arm the watchdog near the transition",
+            false
+        )
+    if summary.black_watchdog_upstream_guest_black_count > 0:
+        return BlackScreenDiagnosis(
+            black_screen_kind_upstream_guest_black(),
+            "upstream-guest-black",
+            "GameOnly was black and raw VideoOut backing memory was also near-black",
+            "guest VideoOut producer or upstream render/copy path",
+            writer_label,
+            "inspect the last VideoOut storage writer and the render passes feeding that image",
+            true
+        )
+    if summary.black_watchdog_vulkan_black_guest_nonblack_count > 0:
+        return BlackScreenDiagnosis(
+            black_screen_kind_vulkan_source_black(),
+            "vulkan-source-black",
+            "GameOnly was black while raw guest backing memory still contained nonblack data",
+            "texture cache upload, layout, detiling, or stale Vulkan image path",
+            writer_label,
+            "prioritize texture-cache invalidation, tiling conversion, and image layout barriers",
+            true
+        )
+    if summary.black_watchdog_frameimage_count > 0 and summary.black_watchdog_black_count > 0 and summary.black_watchdog_gameonly_count == 0:
+        return BlackScreenDiagnosis(
+            black_screen_kind_compositor_or_swapchain(),
+            "host-compositor-black",
+            "host frame or overlay stages went black without GameOnly evidence in the excerpt",
+            "FSR, post-processing, ImGui texture, or swapchain compositor",
+            writer_label,
+            "capture both GameOnly and WithOverlays in the same failing window",
+            true
+        )
+    if summary.black_watchdog_persistent_abort_count > 0:
+        return BlackScreenDiagnosis(
+            black_screen_kind_watchdog_abort(),
+            "watchdog-abort",
+            "strict watchdog aborted after repeated near-black frames, but the source split was incomplete",
+            black_watchdog_stage_label(summary.last_black_watchdog_stage),
+            writer_label,
+            "rerun with GameOnly, FrameImage, and WithOverlays watchdog readbacks enabled",
+            true
+        )
+    return BlackScreenDiagnosis(
+        black_screen_kind_unclassified(),
+        "unclassified",
+        "watchdog evidence was present but did not match a known source split",
+        black_watchdog_stage_label(summary.last_black_watchdog_stage),
+        writer_label,
+        "inspect the compact TRACE_BLACK_WATCHDOG lines around the transition",
+        true
+    )
+
 def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
     game: GameId = ufc1_game_id()
     log_path_buffer: mutable u8[1024] = zeroed
@@ -786,6 +897,7 @@ def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[FS.Read, Sys.F
 def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
     risk: FmaskRisk = ufc_trace_fmask_risk(result.render)
     metadata_class: FmaskMetadataClass = ufc_trace_fmask_metadata_class(result.render)
+    black_diagnosis: BlackScreenDiagnosis = ufc_trace_black_screen_diagnosis(result.render)
     can Console.Write:
         trusted Unsafe.RawExtern:
             printf("profile=%s\n", result.run.profile.name)
@@ -803,6 +915,7 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("screenshots count=%lld dark=%lld bright=%lld last_avg_luma_x100=%lld last_max_luma=%lld last_near_black_x100=%lld min_avg_luma_x100=%lld max_avg_luma_x100=%lld\n", result.render.screenshot_count, result.render.dark_screenshot_count, result.render.bright_screenshot_count, result.render.last_screenshot_avg_luma_x100, result.render.last_screenshot_max_luma, result.render.last_screenshot_near_black_pct_x100, result.render.min_screenshot_avg_luma_x100, result.render.max_screenshot_avg_luma_x100)
             printf("black_watchdog count=%lld gameonly=%lld frameimage=%lld withoverlays=%lld black=%lld nonblack_gameonly=%lld persistent_aborts=%lld upstream_guest_black=%lld vulkan_black_guest_nonblack=%lld\n", result.render.black_watchdog_count, result.render.black_watchdog_gameonly_count, result.render.black_watchdog_frameimage_count, result.render.black_watchdog_withoverlays_count, result.render.black_watchdog_black_count, result.render.black_watchdog_nonblack_gameonly_count, result.render.black_watchdog_persistent_abort_count, result.render.black_watchdog_upstream_guest_black_count, result.render.black_watchdog_vulkan_black_guest_nonblack_count)
             printf("black_watchdog_last stage=%lld frame=%lld consecutive=%lld avg_luma_x100=%lld max_luma=%lld near_black_x100=%lld guest_avg_luma_x100=%lld guest_max_luma=%lld guest_near_black_x100=%lld writer=%lld writer_seq=%lld writer_addr=0x%llx videoout_addr=0x%llx image_id=%lld\n", result.render.last_black_watchdog_stage, result.render.last_black_watchdog_frame, result.render.last_black_watchdog_consecutive, result.render.last_black_watchdog_avg_luma_x100, result.render.last_black_watchdog_max_luma, result.render.last_black_watchdog_near_black_pct_x100, result.render.last_black_watchdog_guest_avg_luma_x100, result.render.last_black_watchdog_guest_max_luma, result.render.last_black_watchdog_guest_near_black_pct_x100, result.render.last_black_watchdog_last_writer, result.render.last_black_watchdog_last_writer_seq, result.render.last_black_watchdog_last_writer_addr, result.render.last_black_watchdog_videoout_addr, result.render.last_black_watchdog_image_id)
+            printf("black_screen_diagnosis kind=%lld label=%s origin=%s writer=%s avoid_long_run=%d reason=%s action=%s\n", black_diagnosis.kind, black_diagnosis.label, black_diagnosis.likely_origin, black_diagnosis.last_writer_label, 1 if black_diagnosis.avoid_long_run else 0, black_diagnosis.reason, black_diagnosis.recommended_action)
             printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.image_binding_null_count, result.render.compositor_null_layer_count, result.render.metadata_register_count, result.render.fmask_decompress_missing_mrt1_count, result.render.suspicious_score, result.render.first_suspicious_pass)
             printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
             printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)

@@ -255,6 +255,35 @@ def ufc_trace_parser_summarizes_black_watchdog_stats() -> void can[Abort.Panic]:
 
 
 @test
+def ufc_trace_black_screen_diagnosis_classifies_watchdog_splits() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        empty_summary: RenderCheckpoint = empty_checkpoint()
+        absent: BlackScreenDiagnosis = ufc_trace_black_screen_diagnosis(empty_summary)
+        if absent.kind != black_screen_kind_absent():
+            panic("expected absent black-screen diagnosis")
+        if absent.avoid_long_run:
+            panic("expected absent diagnosis to allow normal run policy")
+
+        upstream_summary: RenderCheckpoint = ufc_trace_analyze_text(UFC_TRACE_BLACK_WATCHDOG_FIXTURE)
+        upstream: BlackScreenDiagnosis = ufc_trace_black_screen_diagnosis(upstream_summary)
+        if upstream.kind != black_screen_kind_upstream_guest_black():
+            panic("expected upstream guest-black diagnosis")
+        if upstream.last_writer_label != "BindStorageVideoOut":
+            panic("expected storage-videoout writer label")
+        if not upstream.avoid_long_run:
+            panic("expected upstream black diagnosis to avoid long runs")
+
+        source_summary: RenderCheckpoint = ufc_trace_analyze_text(UFC_TRACE_BLACK_WATCHDOG_GUEST_NONBLACK_FIXTURE)
+        source: BlackScreenDiagnosis = ufc_trace_black_screen_diagnosis(source_summary)
+        if source.kind != black_screen_kind_vulkan_source_black():
+            panic("expected Vulkan source black diagnosis")
+        if source.last_writer_label != "FillBuffer":
+            panic("expected fill-buffer writer label")
+        if not source.avoid_long_run:
+            panic("expected Vulkan source black diagnosis to avoid long runs")
+
+
+@test
 def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]:
     can Abort.Panic:
         decompress_summary: mutable RenderCheckpoint = empty_checkpoint()

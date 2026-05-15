@@ -77,6 +77,20 @@ metadata addresses, whether render targets reported aliased FMASK/CMASK addresse
 texture/storage/videoout-storage counts, last bound image metadata, last pipeline hashes, and a small
 black-screen-adjacent suspicious score.
 
+The strict black-screen watchdog is also interpreted in Elisa. C++ emits compact facts such as
+`TRACE_BLACK_WATCHDOG`, luma stats, raw VideoOut backing-memory stats, and last-writer breadcrumbs;
+Elisa turns those facts into a source split:
+
+- `upstream-guest-black`: `GameOnly` and raw VideoOut memory are both black, pointing before the host
+  compositor.
+- `vulkan-source-black`: `GameOnly` is black while raw guest memory is nonblack, pointing at texture
+  cache, detiling, upload, or layout handling.
+- `host-compositor-black`: final frame stages are black without matching `GameOnly` evidence, pointing
+  at FSR, post-processing, ImGui texture state, or swapchain composition.
+
+This keeps black-screen triage policy in Elisa while the C++ renderer remains responsible only for
+emitting facts and failing fast in strict diagnostic mode.
+
 The FMASK classifier is intentionally Elisa-owned rather than C++ renderer-owned. The C++ trace reports
 active metadata addresses, while still including raw CMASK/FM‌ASK register bases for audit. Elisa
 currently marks missing FMASK metadata, distinct FMASK/CMASK metadata, aliased FMASK/CMASK metadata,
