@@ -204,7 +204,18 @@ bool Instance::CreateDevice() {
                           vk::PhysicalDevicePortabilitySubsetFeaturesKHR,
                           vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT,
                           vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
-                          vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT>();
+                          vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT,
+                          vk::PhysicalDeviceCustomBorderColorFeaturesEXT,
+                          vk::PhysicalDeviceDepthClipControlFeaturesEXT,
+                          vk::PhysicalDeviceDepthClipEnableFeaturesEXT,
+                          vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT,
+                          vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
+                          vk::PhysicalDeviceLegacyVertexAttributesFeaturesEXT,
+                          vk::PhysicalDeviceProvokingVertexFeaturesEXT,
+                          vk::PhysicalDeviceVertexAttributeDivisorFeatures,
+                          vk::PhysicalDeviceMaintenance8FeaturesKHR,
+                          vk::PhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT,
+                          vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT>();
     features = feature_chain.get().features;
 
     const vk::StructureChain properties_chain = physical_device.getProperties2<
@@ -272,18 +283,80 @@ bool Instance::CreateDevice() {
         LOG_INFO(Render_Vulkan, "- nullDescriptor: {}", robustness2_features.nullDescriptor);
     }
     custom_border_color = add_extension(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+    if (custom_border_color) {
+        custom_border_color_features =
+            feature_chain.get<vk::PhysicalDeviceCustomBorderColorFeaturesEXT>();
+        custom_border_color = custom_border_color_features.customBorderColors;
+        LOG_INFO(Render_Vulkan, "- customBorderColors: {}",
+                 custom_border_color_features.customBorderColors);
+        LOG_INFO(Render_Vulkan, "- customBorderColorWithoutFormat: {}",
+                 custom_border_color_features.customBorderColorWithoutFormat);
+    }
     depth_clip_control = add_extension(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+    if (depth_clip_control) {
+        depth_clip_control_features =
+            feature_chain.get<vk::PhysicalDeviceDepthClipControlFeaturesEXT>();
+        depth_clip_control = depth_clip_control_features.depthClipControl;
+        LOG_INFO(Render_Vulkan, "- depthClipControl: {}",
+                 depth_clip_control_features.depthClipControl);
+    }
     depth_clip_enable = add_extension(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+    if (depth_clip_enable) {
+        depth_clip_enable_features =
+            feature_chain.get<vk::PhysicalDeviceDepthClipEnableFeaturesEXT>();
+        depth_clip_enable = depth_clip_enable_features.depthClipEnable;
+        LOG_INFO(Render_Vulkan, "- depthClipEnable: {}",
+                 depth_clip_enable_features.depthClipEnable);
+    }
     vertex_input_dynamic_state = add_extension(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+    if (vertex_input_dynamic_state) {
+        vertex_input_dynamic_state_features =
+            feature_chain.get<vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT>();
+        vertex_input_dynamic_state =
+            vertex_input_dynamic_state_features.vertexInputDynamicState;
+        LOG_INFO(Render_Vulkan, "- vertexInputDynamicState: {}",
+                 vertex_input_dynamic_state_features.vertexInputDynamicState);
+    }
     list_restart = add_extension(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
+    if (list_restart) {
+        list_restart_features =
+            feature_chain.get<vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT>();
+        list_restart = list_restart_features.primitiveTopologyListRestart;
+        LOG_INFO(Render_Vulkan, "- primitiveTopologyListRestart: {}",
+                 list_restart_features.primitiveTopologyListRestart);
+        LOG_INFO(Render_Vulkan, "- primitiveTopologyPatchListRestart: {}",
+                 list_restart_features.primitiveTopologyPatchListRestart);
+    }
     amd_shader_explicit_vertex_parameter =
         add_extension(VK_AMD_SHADER_EXPLICIT_VERTEX_PARAMETER_EXTENSION_NAME);
     if (!amd_shader_explicit_vertex_parameter) {
         fragment_shader_barycentric =
             add_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+        if (fragment_shader_barycentric) {
+            fragment_shader_barycentric_features =
+                feature_chain.get<vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR>();
+            fragment_shader_barycentric =
+                fragment_shader_barycentric_features.fragmentShaderBarycentric;
+            LOG_INFO(Render_Vulkan, "- fragmentShaderBarycentric: {}",
+                     fragment_shader_barycentric_features.fragmentShaderBarycentric);
+        }
     }
     legacy_vertex_attributes = add_extension(VK_EXT_LEGACY_VERTEX_ATTRIBUTES_EXTENSION_NAME);
+    if (legacy_vertex_attributes) {
+        legacy_vertex_attributes_features =
+            feature_chain.get<vk::PhysicalDeviceLegacyVertexAttributesFeaturesEXT>();
+        legacy_vertex_attributes = legacy_vertex_attributes_features.legacyVertexAttributes;
+        LOG_INFO(Render_Vulkan, "- legacyVertexAttributes: {}",
+                 legacy_vertex_attributes_features.legacyVertexAttributes);
+    }
     provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+    if (provoking_vertex) {
+        provoking_vertex_features =
+            feature_chain.get<vk::PhysicalDeviceProvokingVertexFeaturesEXT>();
+        provoking_vertex = provoking_vertex_features.provokingVertexLast;
+        LOG_INFO(Render_Vulkan, "- provokingVertexLast: {}",
+                 provoking_vertex_features.provokingVertexLast);
+    }
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
@@ -323,6 +396,17 @@ bool Instance::CreateDevice() {
         LOG_INFO(Render_Vulkan, "- sampler2DViewOf3D: {}",
                  image_2d_view_of_3d_features.sampler2DViewOf3D);
     }
+    vertex_attribute_divisor_features =
+        feature_chain.get<vk::PhysicalDeviceVertexAttributeDivisorFeatures>();
+    if (!vertex_attribute_divisor_features.vertexAttributeInstanceRateDivisor) {
+        LOG_CRITICAL(Render_Vulkan,
+                     "Required feature vertexAttributeInstanceRateDivisor is unavailable.");
+        return false;
+    }
+    LOG_INFO(Render_Vulkan, "- vertexAttributeInstanceRateDivisor: {}",
+             vertex_attribute_divisor_features.vertexAttributeInstanceRateDivisor);
+    LOG_INFO(Render_Vulkan, "- vertexAttributeInstanceRateZeroDivisor: {}",
+             vertex_attribute_divisor_features.vertexAttributeInstanceRateZeroDivisor);
     const bool calibrated_timestamps =
         TRACY_GPU_ENABLED ? add_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) : false;
 
@@ -365,11 +449,27 @@ bool Instance::CreateDevice() {
         .pQueuePriorities = queue_priorities.data(),
     };
 
-    const auto topology_list_restart_features =
-        feature_chain.get<vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT>();
     const auto vk11_features = feature_chain.get<vk::PhysicalDeviceVulkan11Features>();
     vk12_features = feature_chain.get<vk::PhysicalDeviceVulkan12Features>();
     vk13_features = feature_chain.get<vk::PhysicalDeviceVulkan13Features>();
+    if (maintenance_8) {
+        maintenance_8_features = feature_chain.get<vk::PhysicalDeviceMaintenance8FeaturesKHR>();
+        maintenance_8 = maintenance_8_features.maintenance8;
+        LOG_INFO(Render_Vulkan, "- maintenance8: {}", maintenance_8_features.maintenance8);
+    }
+    if (attachment_feedback_loop) {
+        attachment_feedback_loop_layout_features =
+            feature_chain.get<vk::PhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT>();
+        attachment_feedback_loop_dynamic_state_features =
+            feature_chain.get<vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT>();
+        attachment_feedback_loop =
+            attachment_feedback_loop_layout_features.attachmentFeedbackLoopLayout &&
+            attachment_feedback_loop_dynamic_state_features.attachmentFeedbackLoopDynamicState;
+        LOG_INFO(Render_Vulkan, "- attachmentFeedbackLoopLayout: {}",
+                 attachment_feedback_loop_layout_features.attachmentFeedbackLoopLayout);
+        LOG_INFO(Render_Vulkan, "- attachmentFeedbackLoopDynamicState: {}",
+                 attachment_feedback_loop_dynamic_state_features.attachmentFeedbackLoopDynamicState);
+    }
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
             .queueCreateInfoCount = 1u,
@@ -438,18 +538,19 @@ bool Instance::CreateDevice() {
         },
         // Extensions
         vk::PhysicalDeviceCustomBorderColorFeaturesEXT{
-            .customBorderColors = true,
-            .customBorderColorWithoutFormat = true,
+            .customBorderColors = custom_border_color_features.customBorderColors,
+            .customBorderColorWithoutFormat =
+                custom_border_color_features.customBorderColorWithoutFormat,
         },
         vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT{
             .extendedDynamicState3ColorWriteMask =
                 dynamic_state_3_features.extendedDynamicState3ColorWriteMask,
         },
         vk::PhysicalDeviceDepthClipControlFeaturesEXT{
-            .depthClipControl = true,
+            .depthClipControl = depth_clip_control_features.depthClipControl,
         },
         vk::PhysicalDeviceDepthClipEnableFeaturesEXT{
-            .depthClipEnable = true,
+            .depthClipEnable = depth_clip_enable_features.depthClipEnable,
         },
         vk::PhysicalDeviceRobustness2FeaturesEXT{
             .robustBufferAccess2 = robustness2_features.robustBufferAccess2,
@@ -457,33 +558,40 @@ bool Instance::CreateDevice() {
             .nullDescriptor = robustness2_features.nullDescriptor,
         },
         vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT{
-            .vertexInputDynamicState = true,
+            .vertexInputDynamicState =
+                vertex_input_dynamic_state_features.vertexInputDynamicState,
         },
         vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT{
-            .primitiveTopologyListRestart = true,
+            .primitiveTopologyListRestart = list_restart_features.primitiveTopologyListRestart,
             .primitiveTopologyPatchListRestart =
-                topology_list_restart_features.primitiveTopologyPatchListRestart,
+                list_restart_features.primitiveTopologyPatchListRestart,
         },
         vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR{
-            .fragmentShaderBarycentric = true,
+            .fragmentShaderBarycentric =
+                fragment_shader_barycentric_features.fragmentShaderBarycentric,
         },
         vk::PhysicalDeviceLegacyVertexAttributesFeaturesEXT{
-            .legacyVertexAttributes = true,
+            .legacyVertexAttributes = legacy_vertex_attributes_features.legacyVertexAttributes,
         },
         vk::PhysicalDeviceProvokingVertexFeaturesEXT{
-            .provokingVertexLast = true,
+            .provokingVertexLast = provoking_vertex_features.provokingVertexLast,
         },
         vk::PhysicalDeviceVertexAttributeDivisorFeatures{
-            .vertexAttributeInstanceRateDivisor = true,
+            .vertexAttributeInstanceRateDivisor =
+                vertex_attribute_divisor_features.vertexAttributeInstanceRateDivisor,
+            .vertexAttributeInstanceRateZeroDivisor =
+                vertex_attribute_divisor_features.vertexAttributeInstanceRateZeroDivisor,
         },
         vk::PhysicalDeviceMaintenance8FeaturesKHR{
-            .maintenance8 = true,
+            .maintenance8 = maintenance_8_features.maintenance8,
         },
         vk::PhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT{
-            .attachmentFeedbackLoopLayout = true,
+            .attachmentFeedbackLoopLayout =
+                attachment_feedback_loop_layout_features.attachmentFeedbackLoopLayout,
         },
         vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT{
-            .attachmentFeedbackLoopDynamicState = true,
+            .attachmentFeedbackLoopDynamicState =
+                attachment_feedback_loop_dynamic_state_features.attachmentFeedbackLoopDynamicState,
         },
         vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT{
             .shaderBufferFloat32AtomicMinMax =

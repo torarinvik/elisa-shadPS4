@@ -66,29 +66,35 @@ RefCountedTexture::RefCountedTexture(RefCountedTexture&& other) noexcept : inner
     other.inner = nullptr;
 }
 
+static void ReleaseInner(Inner* inner) {
+    if (inner != nullptr && inner->count.fetch_sub(1) == 1) {
+        delete inner;
+    }
+}
+
 RefCountedTexture& RefCountedTexture::operator=(const RefCountedTexture& other) {
     if (this == &other)
         return *this;
-    inner = other.inner;
-    if (inner != nullptr) {
-        ++inner->count;
+    Inner* next = other.inner;
+    if (next != nullptr) {
+        ++next->count;
     }
+    ReleaseInner(inner);
+    inner = next;
     return *this;
 }
 
 RefCountedTexture& RefCountedTexture::operator=(RefCountedTexture&& other) noexcept {
     if (this == &other)
         return *this;
-    std::swap(inner, other.inner);
+    ReleaseInner(inner);
+    inner = other.inner;
+    other.inner = nullptr;
     return *this;
 }
 
 RefCountedTexture::~RefCountedTexture() {
-    if (inner != nullptr) {
-        if (inner->count.fetch_sub(1) == 1) {
-            delete inner;
-        }
-    }
+    ReleaseInner(inner);
 }
 
 RefCountedTexture::Image RefCountedTexture::GetTexture() const {
@@ -161,6 +167,7 @@ void WorkerLoop() {
 
             if (EmulatorSettings.IsVkCrashDiagnosticEnabled()) {
                 // FIXME: Crash diagnostic hangs when building the command buffer here
+                ReleaseInner(core);
                 continue;
             }
 
@@ -168,6 +175,7 @@ void WorkerLoop() {
                 Common::FS::IOFile file(path, Common::FS::FileAccessMode::Read);
                 if (!file.IsOpen()) {
                     LOG_ERROR(ImGui, "Failed to open PNG file: {}", path.string());
+                    ReleaseInner(core);
                     continue;
                 }
                 png_raw.resize(file.GetSize());
@@ -176,9 +184,16 @@ void WorkerLoop() {
                 file.Close();
             }
 
-            int width, height;
+            int width = 0;
+            int height = 0;
             const stbi_uc* pixels =
                 stbi_load_from_memory(png_raw.data(), png_raw.size(), &width, &height, nullptr, 4);
+            if (pixels == nullptr || width <= 0 || height <= 0) {
+                LOG_ERROR(ImGui, "Failed to decode PNG texture");
+                stbi_image_free((void*)pixels);
+                ReleaseInner(core);
+                continue;
+            }
 
             auto texture = Vulkan::UploadTexture(pixels, vk::Format::eR8G8B8A8Unorm, width, height,
                                                  width * height * 4 * sizeof(stbi_uc));

@@ -47,18 +47,28 @@ struct UniqueBuffer {
     UniqueBuffer& operator=(const UniqueBuffer&) = delete;
 
     UniqueBuffer(UniqueBuffer&& other)
-        : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
+        : device{std::exchange(other.device, vk::Device{})},
+          allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
-          buffer{std::exchange(other.buffer, VK_NULL_HANDLE)} {}
+          buffer{std::exchange(other.buffer, VK_NULL_HANDLE)},
+          bda_addr{std::exchange(other.bda_addr, 0)} {}
     UniqueBuffer& operator=(UniqueBuffer&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Destroy();
+        device = std::exchange(other.device, vk::Device{});
         buffer = std::exchange(other.buffer, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
+        bda_addr = std::exchange(other.bda_addr, 0);
         return *this;
     }
 
     void Create(const vk::BufferCreateInfo& image_ci, MemoryUsage usage,
                 VmaAllocationInfo* out_alloc_info);
+
+    void Destroy();
 
     operator vk::Buffer() const {
         return buffer;

@@ -283,8 +283,13 @@ void BufferCache::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gd
 
 void BufferCache::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
     if (!dst_gds && !IsRegionGpuModified(dst, num_bytes)) {
-        if (!src_gds && !IsRegionGpuModified(src, num_bytes) &&
-            !texture_cache.FindImageFromRange(src, num_bytes)) {
+        const bool dst_aliases_image =
+            static_cast<bool>(texture_cache.FindImageFromRange(dst, num_bytes, false));
+        const bool src_aliases_image =
+            !src_gds &&
+            static_cast<bool>(texture_cache.FindImageFromRange(src, num_bytes, false));
+        if (!src_gds && !IsRegionGpuModified(src, num_bytes) && !src_aliases_image &&
+            !dst_aliases_image) {
             // Both buffers were not transferred to GPU yet. Can safely copy in host memory.
             memcpy(std::bit_cast<void*>(dst), std::bit_cast<void*>(src), num_bytes);
             return;
@@ -442,14 +447,18 @@ BufferId BufferCache::FindBuffer(VAddr device_addr, u32 size) {
 
 BufferCache::OverlapResult BufferCache::ResolveOverlaps(VAddr device_addr, u32 wanted_size) {
     static constexpr int STREAM_LEAP_THRESHOLD = 16;
+    static constexpr VAddr max_page = 1ULL << MemoryTracker::MAX_CPU_PAGE_BITS;
     boost::container::small_vector<BufferId, 16> overlap_ids;
     VAddr begin = device_addr;
     VAddr end = device_addr + wanted_size;
+    if (end < device_addr || end > max_page) {
+        end = max_page;
+    }
     int stream_score = 0;
     bool has_stream_leap = false;
     const auto expand_begin = [&](VAddr add_value) {
         static constexpr VAddr min_page = CACHING_PAGESIZE + DEVICE_PAGESIZE;
-        if (add_value > begin - min_page) {
+        if (begin < min_page || add_value > begin - min_page) {
             begin = min_page;
             device_addr = DEVICE_PAGESIZE;
             return;
@@ -458,8 +467,7 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(VAddr device_addr, u32 w
         device_addr = begin - CACHING_PAGESIZE;
     };
     const auto expand_end = [&](VAddr add_value) {
-        static constexpr VAddr max_page = 1ULL << MemoryTracker::MAX_CPU_PAGE_BITS;
-        if (add_value > max_page - end) {
+        if (end > max_page || add_value > max_page - end) {
             end = max_page;
             return;
         }
@@ -857,6 +865,7 @@ void BufferCache::RunGarbageCollector() {
         DownloadBufferMemory<true>(buffer, buffer.CpuAddr(), buffer.SizeBytes(), true);
         DeleteBuffer(buffer_id);
     };
+    lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
 }
 
 void BufferCache::TouchBuffer(const Buffer& buffer) {

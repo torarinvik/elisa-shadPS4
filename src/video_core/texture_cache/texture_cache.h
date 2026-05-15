@@ -191,6 +191,9 @@ public:
     bool IsMetaCleared(VAddr address, u32 slice) const {
         const auto& it = surface_metas.find(address);
         if (it != surface_metas.end()) {
+            if (slice >= 32) {
+                return false;
+            }
             return it.value().clear_mask & (1u << slice);
         }
         return false;
@@ -210,6 +213,9 @@ public:
     bool TouchMeta(VAddr address, u32 slice, bool is_clear) {
         auto it = surface_metas.find(address);
         if (it != surface_metas.end()) {
+            if (slice >= 32) {
+                return false;
+            }
             if (is_clear) {
                 it.value().clear_mask |= 1u << slice;
             } else {

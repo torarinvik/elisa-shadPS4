@@ -185,6 +185,30 @@ def ufc_trace_parser_summarizes_gpu_command_diagnostics() -> void can[Abort.Pani
 
 
 @test
+def ufc_trace_parser_summarizes_screenshot_stats() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: RenderCheckpoint = ufc_trace_analyze_text("[Render.Vulkan] <Info> vk_presenter.cpp:501 LogScreenshotStats: TRACE_SCREENSHOT path=/tmp/bright.png size=1920x1080 avg_luma=200.92 max_luma=255 near_black=0.00%\n[Render.Vulkan] <Info> vk_presenter.cpp:501 LogScreenshotStats: TRACE_SCREENSHOT path=/tmp/dark.png size=1920x1080 avg_luma=3.89 max_luma=69 near_black=67.51%\n")
+        if summary.screenshot_count != 2:
+            panic("expected two screenshot stat lines")
+        if summary.dark_screenshot_count != 1:
+            panic("expected one dark screenshot")
+        if summary.bright_screenshot_count != 1:
+            panic("expected one bright screenshot")
+        if summary.last_screenshot_avg_luma_x100 != 389:
+            panic("expected last screenshot average luma")
+        if summary.last_screenshot_max_luma != 69:
+            panic("expected last screenshot max luma")
+        if summary.last_screenshot_near_black_pct_x100 != 6751:
+            panic("expected last near-black percentage")
+        if summary.min_screenshot_avg_luma_x100 != 389:
+            panic("expected minimum screenshot average luma")
+        if summary.max_screenshot_avg_luma_x100 != 20092:
+            panic("expected maximum screenshot average luma")
+        if summary.suspicious_score != 1:
+            panic("expected dark screenshot to mark suspicion")
+
+
+@test
 def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]:
     can Abort.Panic:
         decompress_summary: mutable RenderCheckpoint = empty_checkpoint()
@@ -269,6 +293,12 @@ def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
             panic("expected compositor null-layer profile name")
         if videoout_unorm_profile().name != "videoout-unorm":
             panic("expected videoout unorm profile name")
+        if fmask_in_place_videoout_unorm_profile().name != "fmask-in-place-videoout-unorm":
+            panic("expected combined fmask/videoout profile name")
+        if fmask_in_place_probe_profile().name != "fmask-in-place-20s":
+            panic("expected fmask probe profile name")
+        if fmask_in_place_videoout_unorm_probe_profile().name != "fmask-in-place-videoout-unorm-20s":
+            panic("expected combined probe profile name")
         if baseline_safe_profile().timeout_ms != 8000:
             panic("expected baseline timeout")
         if existing_log_profile().timeout_ms != 0:
@@ -293,6 +323,18 @@ def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
             panic("expected videoout timeout")
         if not videoout_unorm_profile().videoout_unorm:
             panic("expected videoout unorm flag")
+        if not fmask_in_place_videoout_unorm_profile().fmask_decompress_in_place:
+            panic("expected combined profile fmask in-place flag")
+        if not fmask_in_place_videoout_unorm_profile().videoout_unorm:
+            panic("expected combined profile videoout unorm flag")
+        if fmask_in_place_probe_profile().timeout_ms != 20000:
+            panic("expected fmask probe timeout")
+        if not fmask_in_place_probe_profile().fmask_decompress_in_place:
+            panic("expected fmask probe in-place flag")
+        if fmask_in_place_videoout_unorm_probe_profile().timeout_ms != 20000:
+            panic("expected combined probe timeout")
+        if not fmask_in_place_videoout_unorm_probe_profile().videoout_unorm:
+            panic("expected combined probe videoout unorm flag")
 
 
 @test

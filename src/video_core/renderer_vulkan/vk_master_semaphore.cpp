@@ -62,16 +62,21 @@ void MasterSemaphore::Wait(u64 tick) {
     };
 
     const u64 timeout = GpuWaitTimeoutNs();
+    u32 timeout_count = 0;
     while (true) {
         const auto result = instance.GetDevice().waitSemaphores(&wait_info, timeout);
         if (result == vk::Result::eSuccess) {
             break;
         }
         if (result == vk::Result::eTimeout) {
+            ++timeout_count;
             LogGpuWaitTimeout("master_semaphore", timeout);
             LOG_ERROR(Render_Vulkan,
                       "GPU timeline semaphore timeout: target_tick={} known_gpu_tick={} current_tick={}",
                       tick, KnownGpuTick(), CurrentTick());
+            if (AbortGpuWaitIfRetryLimitReached("master_semaphore", timeout_count)) {
+                return;
+            }
             continue;
         }
         LogGpuWaitFailure("master_semaphore", result);

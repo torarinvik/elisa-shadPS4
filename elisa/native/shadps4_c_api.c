@@ -73,6 +73,10 @@ static void shadps4_elisa_apply_trace_env(int null_fmask_reads, int fmask_decomp
     setenv("SHADPS4_MOLTENVK_SAFE_MODE", "1", 1);
     setenv("SHADPS4_FORCE_FIFO_PRESENT", "1", 1);
     setenv("SHADPS4_TRACE_GPU_COMMANDS", "1", 1);
+    setenv("SHADPS4_TRACE_SCREENSHOT_INTERVAL_MS", "3000", 1);
+    setenv("SHADPS4_TRACE_SCREENSHOT_GAME_ONLY", "1", 1);
+    setenv("SHADPS4_TRACE_SCREENSHOT_STATS_ONLY", "1", 1);
+    setenv("SHADPS4_TRACE_SCREENSHOT_DIR", "./elisa_trace_screenshots", 1);
     setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
     setenv("MVK_CONFIG_METAL_COMPILE_TIMEOUT", "2000000000", 0);
     unsetenv("SHADPS4_NULL_FMASK_TEXTURE_READS");
@@ -146,8 +150,12 @@ static void shadps4_elisa_profile_flags(const char* profile, int* null_fmask_rea
     }
     if (strcmp(profile, "fmask-null-read") == 0) {
         *null_fmask_reads = 1;
-    } else if (strcmp(profile, "fmask-in-place") == 0) {
+    } else if (strcmp(profile, "fmask-in-place") == 0 || strcmp(profile, "fmask-in-place-20s") == 0) {
         *fmask_decompress_in_place = 1;
+    } else if (strcmp(profile, "fmask-in-place-videoout-unorm") == 0 ||
+               strcmp(profile, "fmask-in-place-videoout-unorm-20s") == 0) {
+        *fmask_decompress_in_place = 1;
+        *videoout_unorm = 1;
     } else if (strcmp(profile, "compositor-null-layer") == 0) {
         *compositor_null_layer = 1;
     } else if (strcmp(profile, "videoout-unorm") == 0) {
@@ -306,10 +314,12 @@ static int shadps4_elisa_keep_trace_line(const char* line, size_t line_len) {
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER metadata_texture_read") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER fmask_decompress") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER fmask_decompress_missing_mrt1") ||
+        shadps4_elisa_line_contains(line, line_len, "is_videoout_storage=true") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER image_binding_null") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER compositor_null_layer");
     return shadps4_elisa_line_contains(line, line_len, "ELISA_TRACE") || trace_render_evidence ||
            shadps4_elisa_line_contains(line, line_len, "TRACE_VIDEO_OUT") ||
+           shadps4_elisa_line_contains(line, line_len, "TRACE_SCREENSHOT") ||
            shadps4_elisa_line_contains(line, line_len, "GPU command diagnostics:") ||
            shadps4_elisa_line_contains(line, line_len, "GPU command [") ||
            shadps4_elisa_line_contains(line, line_len, "Compiling cs shader") ||
@@ -321,7 +331,8 @@ static int shadps4_elisa_keep_trace_line(const char* line, size_t line_len) {
 static char* shadps4_elisa_filter_trace_log(char* input, size_t input_size, size_t* out_size) {
     const char* header = "ELISA_TRACE log_filter mode=render-evidence\n";
     const size_t header_len = strlen(header);
-    char* output = (char*)malloc(input_size + header_len + 1);
+    const size_t footer_cap = 96;
+    char* output = (char*)malloc(input_size + header_len + footer_cap + 1);
     if (output == NULL) {
         return NULL;
     }

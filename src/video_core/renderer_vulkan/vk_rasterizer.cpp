@@ -1159,7 +1159,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         trace_render_pass ? render_pass_count.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
     const bool log_render_pass =
         trace_render_pass && (render_pass_index <= 96 || (render_pass_index % 180) == 0);
-    RenderState state;
+    RenderState state{};
     state.width = instance.GetMaxFramebufferWidth();
     state.height = instance.GetMaxFramebufferHeight();
     state.num_layers = std::numeric_limits<u16>::max();
@@ -1279,6 +1279,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         state.num_layers = std::min<u32>(state.num_layers, image_view.info.range.extent.layers);
 
         auto& attachment = state.depth_stencil_attachment;
+        attachment = {};
         attachment.image_view = *image_view.image_view;
         attachment.image_layout = image.backing->state.layout;
 

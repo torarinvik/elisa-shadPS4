@@ -100,6 +100,22 @@ static void LogMetaDataRegistration(VAddr address, const TextureCache::MetaDataI
              static_cast<u32>(meta.clear_mask));
 }
 
+static void RegisterSurfaceMeta(tsl::robin_map<VAddr, TextureCache::MetaDataInfo>& surface_metas,
+                                VAddr address, TextureCache::MetaDataInfo meta) {
+    auto it = surface_metas.find(address);
+    if (it == surface_metas.end()) {
+        surface_metas.emplace(address, meta);
+        LogMetaDataRegistration(address, meta, "insert");
+        return;
+    }
+
+    if (it.value().owner_image_id.index == meta.owner_image_id.index && it.value().type == meta.type) {
+        meta.clear_mask = it.value().clear_mask;
+    }
+    it.value() = meta;
+    LogMetaDataRegistration(address, meta, "update");
+}
+
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            AmdGpu::Liverpool* liverpool_, BufferCache& buffer_cache_,
                            PageManager& tracker_)
@@ -741,19 +757,13 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     // Register meta data for this color buffer
     if (desc.info.meta_info.cmask_addr) {
         auto meta = MakeMetaDataInfo(MetaDataInfo::Type::CMask, image, image_id, desc.type);
-        auto [it, inserted] = surface_metas.emplace(desc.info.meta_info.cmask_addr, meta);
-        if (inserted) {
-            LogMetaDataRegistration(desc.info.meta_info.cmask_addr, meta, "insert");
-        }
+        RegisterSurfaceMeta(surface_metas, desc.info.meta_info.cmask_addr, meta);
         image.info.meta_info.cmask_addr = desc.info.meta_info.cmask_addr;
     }
 
     if (desc.info.meta_info.fmask_addr) {
         auto meta = MakeMetaDataInfo(MetaDataInfo::Type::FMask, image, image_id, desc.type);
-        auto [it, inserted] = surface_metas.emplace(desc.info.meta_info.fmask_addr, meta);
-        if (inserted) {
-            LogMetaDataRegistration(desc.info.meta_info.fmask_addr, meta, "insert");
-        }
+        RegisterSurfaceMeta(surface_metas, desc.info.meta_info.fmask_addr, meta);
         image.info.meta_info.fmask_addr = desc.info.meta_info.fmask_addr;
     }
 
@@ -770,10 +780,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     if (desc.info.meta_info.htile_addr) {
         auto meta = MakeMetaDataInfo(MetaDataInfo::Type::HTile, image, image_id, desc.type,
                                      image.info.meta_info.htile_clear_mask);
-        auto [it, inserted] = surface_metas.emplace(desc.info.meta_info.htile_addr, meta);
-        if (inserted) {
-            LogMetaDataRegistration(desc.info.meta_info.htile_addr, meta, "insert");
-        }
+        RegisterSurfaceMeta(surface_metas, desc.info.meta_info.htile_addr, meta);
         image.info.meta_info.htile_addr = desc.info.meta_info.htile_addr;
     }
 
@@ -1125,15 +1132,18 @@ void TextureCache::DeleteImage(ImageId image_id) {
 
     // Remove any registered meta areas.
     const auto& meta_info = image.info.meta_info;
-    if (meta_info.cmask_addr) {
-        surface_metas.erase(meta_info.cmask_addr);
-    }
-    if (meta_info.fmask_addr) {
-        surface_metas.erase(meta_info.fmask_addr);
-    }
-    if (meta_info.htile_addr) {
-        surface_metas.erase(meta_info.htile_addr);
-    }
+    const auto erase_owned_meta = [this, image_id](VAddr address) {
+        if (!address) {
+            return;
+        }
+        auto it = surface_metas.find(address);
+        if (it != surface_metas.end() && it.value().owner_image_id.index == image_id.index) {
+            surface_metas.erase(it);
+        }
+    };
+    erase_owned_meta(meta_info.cmask_addr);
+    erase_owned_meta(meta_info.fmask_addr);
+    erase_owned_meta(meta_info.htile_addr);
 
     // Reclaim image and any image views it references.
     scheduler.DeferOperation([this, image_id] {

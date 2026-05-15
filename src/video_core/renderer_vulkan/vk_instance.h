@@ -484,6 +484,20 @@ private:
     vk::PhysicalDevicePortabilitySubsetFeaturesKHR portability_features;
     vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT dynamic_state_3_features;
     vk::PhysicalDeviceRobustness2FeaturesEXT robustness2_features;
+    vk::PhysicalDeviceCustomBorderColorFeaturesEXT custom_border_color_features;
+    vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control_features;
+    vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable_features;
+    vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT vertex_input_dynamic_state_features;
+    vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT list_restart_features;
+    vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR fragment_shader_barycentric_features;
+    vk::PhysicalDeviceLegacyVertexAttributesFeaturesEXT legacy_vertex_attributes_features;
+    vk::PhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex_features;
+    vk::PhysicalDeviceVertexAttributeDivisorFeatures vertex_attribute_divisor_features;
+    vk::PhysicalDeviceMaintenance8FeaturesKHR maintenance_8_features;
+    vk::PhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT
+        attachment_feedback_loop_layout_features;
+    vk::PhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT
+        attachment_feedback_loop_dynamic_state_features;
     vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT shader_atomic_float2_features;
     vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR
         workgroup_memory_explicit_layout_features;

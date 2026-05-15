@@ -117,6 +117,14 @@ struct RenderCheckpoint:
     last_gpu_dispatch_z: mutable i64
     suspicious_score: mutable i64
     first_suspicious_pass: mutable i64
+    screenshot_count: mutable i64
+    dark_screenshot_count: mutable i64
+    bright_screenshot_count: mutable i64
+    last_screenshot_avg_luma_x100: mutable i64
+    last_screenshot_max_luma: mutable i64
+    last_screenshot_near_black_pct_x100: mutable i64
+    min_screenshot_avg_luma_x100: mutable i64
+    max_screenshot_avg_luma_x100: mutable i64
 
 struct FmaskRisk:
     score: i64
@@ -213,6 +221,15 @@ def compositor_null_layer_profile() -> TraceProfile:
 def videoout_unorm_profile() -> TraceProfile:
     return TraceProfile("videoout-unorm", 8000, false, false, false, true)
 
+def fmask_in_place_videoout_unorm_profile() -> TraceProfile:
+    return TraceProfile("fmask-in-place-videoout-unorm", 8000, false, true, false, true)
+
+def fmask_in_place_probe_profile() -> TraceProfile:
+    return TraceProfile("fmask-in-place-20s", 20000, false, true, false, false)
+
+def fmask_in_place_videoout_unorm_probe_profile() -> TraceProfile:
+    return TraceProfile("fmask-in-place-videoout-unorm-20s", 20000, false, true, false, true)
+
 def empty_checkpoint() -> RenderCheckpoint:
     return RenderCheckpoint(
         0, -1, -1, -1,
@@ -222,7 +239,8 @@ def empty_checkpoint() -> RenderCheckpoint:
         -1, -1, -1, -1,
         -1, -1, -1, -1, -1, -1, render_format_unknown(),
         0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1,
-        0, -1
+        0, -1,
+        0, 0, 0, -1, -1, -1, -1, -1
     )
 
 def trace_byte_at(text: cstr, index: i64) -> u8:
@@ -297,6 +315,31 @@ def trace_decimal_after(text: cstr, start: i64, end: i64, marker: cstr, fallback
         seen <- true
         pos <- pos + 1
     return value if seen else fallback
+
+def trace_scaled_decimal_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i64) -> i64:
+    marker_pos: i64 = trace_find_marker(text, start, end, marker)
+    if marker_pos < 0:
+        return fallback
+    pos: mutable i64 = marker_pos + trace_cstr_len(marker)
+    whole: mutable i64 = 0
+    seen: mutable bool = false
+    while pos < end and trace_is_digit(trace_byte_at(text, pos)):
+        whole <- whole * 10 + (trace_byte_at(text, pos) - '0').i64()
+        seen <- true
+        pos <- pos + 1
+    fraction: mutable i64 = 0
+    fraction_digits: mutable i64 = 0
+    if pos < end and trace_byte_at(text, pos) == '.':
+        pos <- pos + 1
+        while pos < end and trace_is_digit(trace_byte_at(text, pos)) and fraction_digits < 2:
+            fraction <- fraction * 10 + (trace_byte_at(text, pos) - '0').i64()
+            fraction_digits <- fraction_digits + 1
+            seen <- true
+            pos <- pos + 1
+    while fraction_digits < 2:
+        fraction <- fraction * 10
+        fraction_digits <- fraction_digits + 1
+    return whole * 100 + fraction if seen else fallback
 
 def trace_hex_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i64) -> i64:
     marker_pos: i64 = trace_find_marker(text, start, end, marker)
@@ -430,6 +473,25 @@ def ufc_trace_record_gpu_command(summary: mutable RenderCheckpoint&, text: cstr,
     if trace_line_contains(text, start, end, "] swapchain_"):
         summary.gpu_command_swapchain_count <- summary.gpu_command_swapchain_count + 1
 
+def ufc_trace_record_screenshot(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    avg_luma_x100: i64 = trace_scaled_decimal_after(text, start, end, "avg_luma=", -1)
+    near_black_x100: i64 = trace_scaled_decimal_after(text, start, end, "near_black=", -1)
+    max_luma: i64 = trace_decimal_after(text, start, end, "max_luma=", -1)
+    summary.screenshot_count <- summary.screenshot_count + 1
+    summary.last_screenshot_avg_luma_x100 <- avg_luma_x100
+    summary.last_screenshot_near_black_pct_x100 <- near_black_x100
+    summary.last_screenshot_max_luma <- max_luma
+    if avg_luma_x100 >= 0:
+        if summary.min_screenshot_avg_luma_x100 < 0 or avg_luma_x100 < summary.min_screenshot_avg_luma_x100:
+            summary.min_screenshot_avg_luma_x100 <- avg_luma_x100
+        if summary.max_screenshot_avg_luma_x100 < 0 or avg_luma_x100 > summary.max_screenshot_avg_luma_x100:
+            summary.max_screenshot_avg_luma_x100 <- avg_luma_x100
+        if avg_luma_x100 <= 500 or near_black_x100 >= 5000:
+            summary.dark_screenshot_count <- summary.dark_screenshot_count + 1
+            ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        if avg_luma_x100 >= 2500 and near_black_x100 < 5000:
+            summary.bright_screenshot_count <- summary.bright_screenshot_count + 1
+
 def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     ufc_trace_record_compile_line(summary, text, start, end)
     if trace_line_contains(text, start, end, "ELISA_TRACE build_cache_warning"):
@@ -440,6 +502,8 @@ def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start
         summary.gpu_diagnostic_dump_count <- summary.gpu_diagnostic_dump_count + 1
     if trace_line_contains(text, start, end, "GPU command ["):
         ufc_trace_record_gpu_command(summary, text, start, end)
+    if trace_line_contains(text, start, end, "TRACE_SCREENSHOT"):
+        ufc_trace_record_screenshot(summary, text, start, end)
     if not trace_line_contains(text, start, end, "TRACE_RENDER"):
         return
     if trace_line_contains(text, start, end, "TRACE_RENDER metadata_register"):
@@ -613,6 +677,7 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("launch_sanity current_binary=%lld stale_build_warnings=%lld\n", result.render.launch_binary_current_count, result.render.launch_build_cache_warning_count)
             printf("gpu_diagnostics dumps=%lld commands=%lld draws=%lld indexed_draws=%lld indirect_draws=%lld dispatches=%lld swapchain=%lld last_serial=%lld\n", result.render.gpu_diagnostic_dump_count, result.render.gpu_command_count, result.render.gpu_command_draw_count, result.render.gpu_command_indexed_draw_count, result.render.gpu_command_indirect_draw_count, result.render.gpu_command_dispatch_count, result.render.gpu_command_swapchain_count, result.render.last_gpu_command_serial)
             printf("last_gpu_draw vertices=%lld indices=%lld last_dispatch=%lldx%lldx%lld\n", result.render.last_gpu_draw_vertices, result.render.last_gpu_draw_indices, result.render.last_gpu_dispatch_x, result.render.last_gpu_dispatch_y, result.render.last_gpu_dispatch_z)
+            printf("screenshots count=%lld dark=%lld bright=%lld last_avg_luma_x100=%lld last_max_luma=%lld last_near_black_x100=%lld min_avg_luma_x100=%lld max_avg_luma_x100=%lld\n", result.render.screenshot_count, result.render.dark_screenshot_count, result.render.bright_screenshot_count, result.render.last_screenshot_avg_luma_x100, result.render.last_screenshot_max_luma, result.render.last_screenshot_near_black_pct_x100, result.render.min_screenshot_avg_luma_x100, result.render.max_screenshot_avg_luma_x100)
             printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.image_binding_null_count, result.render.compositor_null_layer_count, result.render.metadata_register_count, result.render.fmask_decompress_missing_mrt1_count, result.render.suspicious_score, result.render.first_suspicious_pass)
             printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
             printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
@@ -638,6 +703,17 @@ def ufc_trace_print_comparison(baseline: TraceResult, experiment: TraceResult) -
             printf("comparison_aliases baseline_fmask_cmask=%lld experiment_fmask_cmask=%lld delta=%lld\n", baseline.render.fmask_cmask_alias_count, experiment.render.fmask_cmask_alias_count, experiment.render.fmask_cmask_alias_count - baseline.render.fmask_cmask_alias_count)
             printf("comparison_metadata_reads baseline_fmask=%lld experiment_fmask=%lld baseline_null_actions=%lld experiment_null_actions=%lld\n", baseline.render.fmask_texture_read_count, experiment.render.fmask_texture_read_count, baseline.render.null_metadata_action_count, experiment.render.null_metadata_action_count)
             printf("comparison_videoout baseline_stage=%lld experiment_stage=%lld baseline_render_pass=%lld experiment_render_pass=%lld\n", baseline.render.last_videoout_stage, experiment.render.last_videoout_stage, baseline.render.last_render_pass, experiment.render.last_render_pass)
+            printf("comparison_screenshots baseline_count=%lld experiment_count=%lld baseline_dark=%lld experiment_dark=%lld baseline_min_avg_luma_x100=%lld experiment_min_avg_luma_x100=%lld baseline_last_avg_luma_x100=%lld experiment_last_avg_luma_x100=%lld\n", baseline.render.screenshot_count, experiment.render.screenshot_count, baseline.render.dark_screenshot_count, experiment.render.dark_screenshot_count, baseline.render.min_screenshot_avg_luma_x100, experiment.render.min_screenshot_avg_luma_x100, baseline.render.last_screenshot_avg_luma_x100, experiment.render.last_screenshot_avg_luma_x100)
+            if experiment.render.dark_screenshot_count > baseline.render.dark_screenshot_count:
+                printf("comparison_visual status=worse reason=experiment_added_dark_screenshots\n")
+            else:
+                if experiment.render.dark_screenshot_count < baseline.render.dark_screenshot_count:
+                    printf("comparison_visual status=improved reason=experiment_reduced_dark_screenshots\n")
+                else:
+                    if experiment.render.dark_screenshot_count > 0:
+                        printf("comparison_visual status=still-dark reason=both_profiles_have_dark_screenshots\n")
+                    else:
+                        printf("comparison_visual status=clear reason=no_dark_screenshots_in_compared_window\n")
             if baseline.render.render_target_count == 0 or experiment.render.render_target_count == 0:
                 printf("comparison_conclusion status=inconclusive reason=missing_render_target_coverage\n")
             else:

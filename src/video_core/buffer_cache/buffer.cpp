@@ -63,8 +63,15 @@ UniqueBuffer::UniqueBuffer(vk::Device device_, VmaAllocator allocator_)
     : device{device_}, allocator{allocator_} {}
 
 UniqueBuffer::~UniqueBuffer() {
+    Destroy();
+}
+
+void UniqueBuffer::Destroy() {
     if (buffer) {
         vmaDestroyBuffer(allocator, buffer, allocation);
+        buffer = vk::Buffer{};
+        allocation = {};
+        bda_addr = 0;
     }
 }
 

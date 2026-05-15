@@ -694,13 +694,19 @@ Frame* Presenter::PrepareLastFrame() {
     Frame* frame = last_submit_frame;
 
     const u64 timeout = GpuWaitTimeoutNs();
+    u32 timeout_count = 0;
     while (true) {
         vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false, timeout);
         if (result == vk::Result::eSuccess) {
             break;
         }
         if (result == vk::Result::eTimeout) {
+            ++timeout_count;
             LogGpuWaitTimeout("prepare_last_frame_present_done", timeout);
+            if (AbortGpuWaitIfRetryLimitReached("prepare_last_frame_present_done",
+                                                timeout_count)) {
+                return nullptr;
+            }
             continue;
         }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
@@ -1233,12 +1239,18 @@ Frame* Presenter::GetRenderFrame() {
     };
 
     // Wait for the presentation to be finished so all frame resources are free
+    u32 timeout_count = 0;
     while (wait() != vk::Result::eSuccess) {
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
         // Retry if the waiting times out
         if (result == vk::Result::eTimeout) {
+            ++timeout_count;
             LogGpuWaitTimeout("get_render_frame_present_done", timeout);
+            if (AbortGpuWaitIfRetryLimitReached("get_render_frame_present_done",
+                                                timeout_count)) {
+                return frame;
+            }
             continue;
         }
     }
