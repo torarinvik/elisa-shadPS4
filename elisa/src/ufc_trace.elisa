@@ -100,6 +100,21 @@ struct RenderCheckpoint:
     last_image_binding_bits: mutable i64
     last_image_binding_samples: mutable i64
     last_image_binding_format_kind: mutable i64
+    launch_build_cache_warning_count: mutable i64
+    launch_binary_current_count: mutable i64
+    gpu_diagnostic_dump_count: mutable i64
+    gpu_command_count: mutable i64
+    gpu_command_draw_count: mutable i64
+    gpu_command_indexed_draw_count: mutable i64
+    gpu_command_indirect_draw_count: mutable i64
+    gpu_command_dispatch_count: mutable i64
+    gpu_command_swapchain_count: mutable i64
+    last_gpu_command_serial: mutable i64
+    last_gpu_draw_vertices: mutable i64
+    last_gpu_draw_indices: mutable i64
+    last_gpu_dispatch_x: mutable i64
+    last_gpu_dispatch_y: mutable i64
+    last_gpu_dispatch_z: mutable i64
     suspicious_score: mutable i64
     first_suspicious_pass: mutable i64
 
@@ -110,6 +125,12 @@ struct FmaskRisk:
     reason: cstr
     recommended_profile: TraceProfile
     avoid_long_run: bool
+
+struct FmaskMetadataClass:
+    kind: i64
+    label: cstr
+    reason: cstr
+    suspicious: bool
 
 def metadata_kind_unknown() -> i64:
     return 0
@@ -156,6 +177,21 @@ def fmask_risk_medium() -> i64:
 def fmask_risk_high() -> i64:
     return 2
 
+def fmask_metadata_absent() -> i64:
+    return 0
+
+def fmask_metadata_separate() -> i64:
+    return 1
+
+def fmask_metadata_aliased() -> i64:
+    return 2
+
+def fmask_metadata_single_sample_alias() -> i64:
+    return 3
+
+def fmask_metadata_single_sample_present() -> i64:
+    return 4
+
 def ufc1_game_id() -> GameId:
     return GameId("CUSA00264")
 
@@ -185,6 +221,7 @@ def empty_checkpoint() -> RenderCheckpoint:
         -1, -1, -1, -1, render_format_unknown(), render_format_unknown(),
         -1, -1, -1, -1,
         -1, -1, -1, -1, -1, -1, render_format_unknown(),
+        0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1,
         0, -1
     )
 
@@ -372,8 +409,37 @@ def ufc_trace_record_image_binding(summary: mutable RenderCheckpoint&, text: cst
     if trace_line_contains(text, start, end, "is_videoout_storage=true"):
         summary.image_binding_videoout_storage_count <- summary.image_binding_videoout_storage_count + 1
 
+def ufc_trace_record_gpu_command(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    summary.gpu_command_count <- summary.gpu_command_count + 1
+    summary.last_gpu_command_serial <- trace_decimal_after(text, start, end, "GPU command [", summary.last_gpu_command_serial)
+    if trace_line_contains(text, start, end, "] draw_indexed"):
+        summary.gpu_command_draw_count <- summary.gpu_command_draw_count + 1
+        summary.gpu_command_indexed_draw_count <- summary.gpu_command_indexed_draw_count + 1
+        summary.last_gpu_draw_indices <- trace_decimal_after(text, start, end, "num_indices=", summary.last_gpu_draw_indices)
+    else:
+        if trace_line_contains(text, start, end, "] draw"):
+            summary.gpu_command_draw_count <- summary.gpu_command_draw_count + 1
+            summary.last_gpu_draw_vertices <- trace_decimal_after(text, start, end, "num_vertices=", summary.last_gpu_draw_vertices)
+    if trace_line_contains(text, start, end, "indirect"):
+        summary.gpu_command_indirect_draw_count <- summary.gpu_command_indirect_draw_count + 1
+    if trace_line_contains(text, start, end, "] dispatch"):
+        summary.gpu_command_dispatch_count <- summary.gpu_command_dispatch_count + 1
+        summary.last_gpu_dispatch_x <- trace_decimal_after(text, start, end, "x=", summary.last_gpu_dispatch_x)
+        summary.last_gpu_dispatch_y <- trace_decimal_after(text, start, end, "y=", summary.last_gpu_dispatch_y)
+        summary.last_gpu_dispatch_z <- trace_decimal_after(text, start, end, "z=", summary.last_gpu_dispatch_z)
+    if trace_line_contains(text, start, end, "] swapchain_"):
+        summary.gpu_command_swapchain_count <- summary.gpu_command_swapchain_count + 1
+
 def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     ufc_trace_record_compile_line(summary, text, start, end)
+    if trace_line_contains(text, start, end, "ELISA_TRACE build_cache_warning"):
+        summary.launch_build_cache_warning_count <- summary.launch_build_cache_warning_count + 1
+    if trace_line_contains(text, start, end, "ELISA_TRACE binary_path=./build-codex-make/shadps4"):
+        summary.launch_binary_current_count <- summary.launch_binary_current_count + 1
+    if trace_line_contains(text, start, end, "GPU command diagnostics:"):
+        summary.gpu_diagnostic_dump_count <- summary.gpu_diagnostic_dump_count + 1
+    if trace_line_contains(text, start, end, "GPU command ["):
+        ufc_trace_record_gpu_command(summary, text, start, end)
     if not trace_line_contains(text, start, end, "TRACE_RENDER"):
         return
     if trace_line_contains(text, start, end, "TRACE_RENDER metadata_register"):
@@ -429,15 +495,36 @@ def ufc_trace_analyze_text(log_text: cstr) -> RenderCheckpoint:
 def ufc_trace_recommended_profile(summary: RenderCheckpoint) -> TraceProfile:
     if summary.null_metadata_action_count > 0 or summary.metadata_read_hits_last_fmask_count > 0:
         return fmask_null_read_profile()
+    if summary.fmask_cmask_alias_count > 0:
+        return fmask_null_read_profile()
     if summary.fmask_decompress_missing_mrt1_count > 0 or summary.fmask_decompress_count > 0:
         return fmask_in_place_profile()
     if summary.compositor_null_layer_count > 0 or summary.image_binding_null_count > 0:
         return compositor_null_layer_profile()
     return baseline_safe_profile()
 
+def ufc_trace_fmask_metadata_class(summary: RenderCheckpoint) -> FmaskMetadataClass:
+    if summary.last_fmask_addr <= 0:
+        return FmaskMetadataClass(fmask_metadata_absent(), "absent", "no FMASK metadata address was observed in the trace excerpt", false)
+    if summary.last_cmask_addr > 0 and summary.last_fmask_addr == summary.last_cmask_addr:
+        if summary.last_render_samples <= 1:
+            return FmaskMetadataClass(fmask_metadata_single_sample_alias(), "single-sample-alias", "single-sample render target reports the same FMASK and CMASK address", true)
+        return FmaskMetadataClass(fmask_metadata_aliased(), "aliased", "render target reports the same FMASK and CMASK address", true)
+    if summary.last_render_samples <= 1:
+        return FmaskMetadataClass(fmask_metadata_single_sample_present(), "single-sample-present", "single-sample render target still reports an FMASK address", true)
+    return FmaskMetadataClass(fmask_metadata_separate(), "separate", "FMASK and CMASK metadata addresses are present and distinct", false)
+
 def ufc_trace_fmask_risk(summary: RenderCheckpoint) -> FmaskRisk:
     score: mutable i64 = summary.suspicious_score
     reason: mutable cstr = "no suspicious FMASK-adjacent trace signals"
+    metadata_class: FmaskMetadataClass = ufc_trace_fmask_metadata_class(summary)
+    if metadata_class.kind == fmask_metadata_single_sample_alias():
+        score <- score + 2
+        reason <- metadata_class.reason
+    else:
+        if metadata_class.kind == fmask_metadata_single_sample_present():
+            score <- score + 1
+            reason <- metadata_class.reason
     if summary.metadata_read_hits_last_fmask_count > 0:
         score <- score + 2
         reason <- "metadata reads hit the latest FMASK address"
@@ -511,6 +598,7 @@ def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[FS.Read, Sys.F
 
 def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
     risk: FmaskRisk = ufc_trace_fmask_risk(result.render)
+    metadata_class: FmaskMetadataClass = ufc_trace_fmask_metadata_class(result.render)
     can Console.Write:
         trusted Unsafe.RawExtern:
             printf("profile=%s\n", result.run.profile.name)
@@ -522,6 +610,9 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("lines=%lld image_bindings=%lld render_targets=%lld depth_targets=%lld\n", result.render.line_count, result.render.image_binding_count, result.render.render_target_count, result.render.depth_target_count)
             printf("image_binding_kinds texture=%lld storage=%lld videoout_storage=%lld last_image_id=%lld last_binding=%lld last_stage=%lld last_addr=0x%llx\n", result.render.image_binding_texture_count, result.render.image_binding_storage_count, result.render.image_binding_videoout_storage_count, result.render.last_image_binding_id, result.render.last_image_binding_index, result.render.last_image_binding_stage, result.render.last_image_binding_addr)
             printf("last_image_binding format_kind=%lld samples=%lld bits=%lld\n", result.render.last_image_binding_format_kind, result.render.last_image_binding_samples, result.render.last_image_binding_bits)
+            printf("launch_sanity current_binary=%lld stale_build_warnings=%lld\n", result.render.launch_binary_current_count, result.render.launch_build_cache_warning_count)
+            printf("gpu_diagnostics dumps=%lld commands=%lld draws=%lld indexed_draws=%lld indirect_draws=%lld dispatches=%lld swapchain=%lld last_serial=%lld\n", result.render.gpu_diagnostic_dump_count, result.render.gpu_command_count, result.render.gpu_command_draw_count, result.render.gpu_command_indexed_draw_count, result.render.gpu_command_indirect_draw_count, result.render.gpu_command_dispatch_count, result.render.gpu_command_swapchain_count, result.render.last_gpu_command_serial)
+            printf("last_gpu_draw vertices=%lld indices=%lld last_dispatch=%lldx%lldx%lld\n", result.render.last_gpu_draw_vertices, result.render.last_gpu_draw_indices, result.render.last_gpu_dispatch_x, result.render.last_gpu_dispatch_y, result.render.last_gpu_dispatch_z)
             printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.image_binding_null_count, result.render.compositor_null_layer_count, result.render.metadata_register_count, result.render.fmask_decompress_missing_mrt1_count, result.render.suspicious_score, result.render.first_suspicious_pass)
             printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
             printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
@@ -531,4 +622,32 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("metadata_reads_by_kind fmask=%lld cmask=%lld htile=%lld unknown=%lld\n", result.render.fmask_texture_read_count, result.render.cmask_texture_read_count, result.render.htile_texture_read_count, result.render.unknown_metadata_read_count)
             printf("metadata_actions null=%lld sample=%lld last_read_addr=0x%llx last_read_kind=%lld\n", result.render.null_metadata_action_count, result.render.sample_metadata_action_count, result.render.last_metadata_read_addr, result.render.last_metadata_read_kind)
             printf("metadata_hits last_fmask=%lld last_cmask=%lld last_htile=%lld fmask_cmask_aliases=%lld\n", result.render.metadata_read_hits_last_fmask_count, result.render.metadata_read_hits_last_cmask_count, result.render.metadata_read_hits_last_htile_count, result.render.fmask_cmask_alias_count)
+            printf("fmask_metadata class=%s suspicious=%d reason=%s\n", metadata_class.label, 1 if metadata_class.suspicious else 0, metadata_class.reason)
             printf("fmask_risk score=%lld level=%s avoid_long_run=%d recommended_profile=%s reason=%s\n", risk.score, risk.label, 1 if risk.avoid_long_run else 0, risk.recommended_profile.name, risk.reason)
+
+def ufc_trace_print_comparison(baseline: TraceResult, experiment: TraceResult) -> void can[Console.Write]:
+    baseline_risk: FmaskRisk = ufc_trace_fmask_risk(baseline.render)
+    experiment_risk: FmaskRisk = ufc_trace_fmask_risk(experiment.render)
+    baseline_metadata: FmaskMetadataClass = ufc_trace_fmask_metadata_class(baseline.render)
+    experiment_metadata: FmaskMetadataClass = ufc_trace_fmask_metadata_class(experiment.render)
+    can Console.Write:
+        trusted Unsafe.RawExtern:
+            printf("comparison baseline=%s experiment=%s\n", baseline.run.profile.name, experiment.run.profile.name)
+            printf("comparison_risk baseline_score=%lld experiment_score=%lld delta=%lld baseline_level=%s experiment_level=%s\n", baseline_risk.score, experiment_risk.score, experiment_risk.score - baseline_risk.score, baseline_risk.label, experiment_risk.label)
+            printf("comparison_metadata_class baseline=%s experiment=%s\n", baseline_metadata.label, experiment_metadata.label)
+            printf("comparison_aliases baseline_fmask_cmask=%lld experiment_fmask_cmask=%lld delta=%lld\n", baseline.render.fmask_cmask_alias_count, experiment.render.fmask_cmask_alias_count, experiment.render.fmask_cmask_alias_count - baseline.render.fmask_cmask_alias_count)
+            printf("comparison_metadata_reads baseline_fmask=%lld experiment_fmask=%lld baseline_null_actions=%lld experiment_null_actions=%lld\n", baseline.render.fmask_texture_read_count, experiment.render.fmask_texture_read_count, baseline.render.null_metadata_action_count, experiment.render.null_metadata_action_count)
+            printf("comparison_videoout baseline_stage=%lld experiment_stage=%lld baseline_render_pass=%lld experiment_render_pass=%lld\n", baseline.render.last_videoout_stage, experiment.render.last_videoout_stage, baseline.render.last_render_pass, experiment.render.last_render_pass)
+            if baseline.render.render_target_count == 0 or experiment.render.render_target_count == 0:
+                printf("comparison_conclusion status=inconclusive reason=missing_render_target_coverage\n")
+            else:
+                if experiment_risk.level == fmask_risk_high() and experiment_metadata.suspicious:
+                    printf("comparison_conclusion status=still-risky reason=experiment_kept_high_risk_fmask_metadata\n")
+                else:
+                    if experiment_risk.score < baseline_risk.score:
+                        printf("comparison_conclusion status=improved reason=experiment_lowered_fmask_risk\n")
+                    else:
+                        if experiment_risk.score > baseline_risk.score:
+                            printf("comparison_conclusion status=worse reason=experiment_raised_fmask_risk\n")
+                        else:
+                            printf("comparison_conclusion status=same reason=experiment_did_not_change_fmask_risk\n")

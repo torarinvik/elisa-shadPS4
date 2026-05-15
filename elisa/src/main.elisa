@@ -2,11 +2,17 @@ include "ufc_trace.elisa"
 
 
 def main() -> int:
-    result: mutable TraceResult = zeroed
+    baseline: mutable TraceResult = zeroed
+    experiment: mutable TraceResult = zeroed
     can Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
-        result <- ufc_trace_run_baseline_safe("../shadPS4")
+        baseline <- ufc_trace_run_baseline_safe("../shadPS4")
+        experiment <- ufc_trace_run_profile("../shadPS4", fmask_null_read_profile())
     can Console.Write:
-        ufc_trace_print_summary(result)
-    if not result.ok:
+        ufc_trace_print_summary(baseline)
+        ufc_trace_print_summary(experiment)
+        ufc_trace_print_comparison(baseline, experiment)
+    if not baseline.ok:
+        return 1
+    if not experiment.ok:
         return 1
     return 0

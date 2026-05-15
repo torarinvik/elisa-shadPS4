@@ -21,13 +21,18 @@ go run ./src test tests --project ../shadPS4/elisa
 go run ./src run app --project ../shadPS4/elisa
 ```
 
-The app runs the `baseline-safe` profile with an 8 second timeout and prints a render summary. The test target uses fixture logs and does not launch the emulator.
+The app runs the `baseline-safe` profile and the targeted `fmask-null-read` profile with 8 second
+timeouts, prints both render summaries, then prints a compact comparison. The test target uses fixture
+logs and does not launch the emulator.
 
 For already-captured logs, call `ufc_trace_analyze_existing_log(path)` from Elisa. That path only grants
 `FS.Read`, `Sys.FFI`, and `SysMemory.Foreign`; it does not spawn or kill shadPS4. This is the preferred
 way to iterate on parser and FMASK/compositor heuristics before any live emulator run.
 
-The native reader caps analysis input at the latest 2 MiB of a trace log, so runaway traces cannot make the Elisa analyzer chew through unbounded output. Normal short safe runs are currently small enough to analyze whole.
+The native reader filters large trace logs down to render evidence, so runaway traces cannot make the
+Elisa analyzer chew through unbounded output. Filtered logs preserve launch sanity markers,
+render-target/depth-target/metadata/FM‌ASK `TRACE_RENDER` evidence, `TRACE_VIDEO_OUT`, shader/pipeline
+compile lines, and GPU command diagnostics, while dropping repeated image-binding and runtime chatter.
 
 The harness intentionally keeps the effect grants local. For example, `main.elisa` grants process/env/filesystem authority only around `ufc_trace_run_baseline_safe`, and grants `Console.Write` only around summary printing. Pure Elisa parsing code does not need those permissions.
 
@@ -71,6 +76,15 @@ HTILE read counts, null-vs-sample metadata actions, whether metadata reads hit t
 metadata addresses, whether render targets reported aliased FMASK/CMASK addresses, image-binding
 texture/storage/videoout-storage counts, last bound image metadata, last pipeline hashes, and a small
 black-screen-adjacent suspicious score.
+
+The FMASK classifier is intentionally Elisa-owned rather than C++ renderer-owned. It currently marks
+missing FMASK metadata, distinct FMASK/CMASK metadata, aliased FMASK/CMASK metadata, and the especially
+suspicious case where a single-sample render target still reports an aliased FMASK/CMASK address. That
+keeps this diagnosis inspectable and testable before we port any renderer behavior.
+
+Profile comparisons also print an explicit conclusion. If either run lacks render-target coverage in
+the analyzed excerpt, the comparison is marked inconclusive instead of treating missing FMASK evidence
+as proof that a profile fixed the issue.
 
 `ufc_trace_fmask_risk(summary)` turns those parsed facts into an Elisa-owned investigation decision:
 low/medium/high risk, a human-readable reason, whether long automated runs should be avoided, and

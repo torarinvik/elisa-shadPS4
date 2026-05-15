@@ -149,6 +149,42 @@ def ufc_trace_parser_marks_black_screen_adjacent_suspicion() -> void can[Abort.P
 
 
 @test
+def ufc_trace_parser_summarizes_gpu_command_diagnostics() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: RenderCheckpoint = ufc_trace_analyze_text(UFC_TRACE_GPU_DIAGNOSTIC_FIXTURE)
+        if summary.launch_build_cache_warning_count != 1:
+            panic("expected one stale build cache warning")
+        if summary.launch_binary_current_count != 1:
+            panic("expected current build binary marker")
+        if summary.gpu_diagnostic_dump_count != 1:
+            panic("expected one gpu diagnostic dump")
+        if summary.gpu_command_count != 4:
+            panic("expected four gpu command lines")
+        if summary.gpu_command_swapchain_count != 1:
+            panic("expected one swapchain gpu command")
+        if summary.gpu_command_draw_count != 2:
+            panic("expected two draw commands")
+        if summary.gpu_command_indexed_draw_count != 1:
+            panic("expected one indexed draw command")
+        if summary.gpu_command_indirect_draw_count != 0:
+            panic("expected no indirect draw command")
+        if summary.gpu_command_dispatch_count != 1:
+            panic("expected one dispatch command")
+        if summary.last_gpu_command_serial != 12:
+            panic("expected last gpu command serial")
+        if summary.last_gpu_draw_vertices != 6:
+            panic("expected last direct draw vertex count")
+        if summary.last_gpu_draw_indices != 42:
+            panic("expected last indexed draw index count")
+        if summary.last_gpu_dispatch_x != 16:
+            panic("expected last dispatch x")
+        if summary.last_gpu_dispatch_y != 8:
+            panic("expected last dispatch y")
+        if summary.last_gpu_dispatch_z != 1:
+            panic("expected last dispatch z")
+
+
+@test
 def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]:
     can Abort.Panic:
         decompress_summary: mutable RenderCheckpoint = empty_checkpoint()
@@ -168,6 +204,14 @@ def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]
         if compositor_risk.recommended_profile.name != compositor_null_layer_profile().name:
             panic("expected compositor null-layer recommendation")
 
+        alias_summary: mutable RenderCheckpoint = empty_checkpoint()
+        alias_summary.fmask_cmask_alias_count <- 1
+        alias_risk: FmaskRisk = ufc_trace_fmask_risk(alias_summary)
+        if alias_risk.level != fmask_risk_medium():
+            panic("expected alias-only risk to be medium")
+        if alias_risk.recommended_profile.name != fmask_null_read_profile().name:
+            panic("expected fmask null-read recommendation for alias risk")
+
         mixed_summary: mutable RenderCheckpoint = empty_checkpoint()
         mixed_summary.metadata_read_hits_last_fmask_count <- 1
         mixed_summary.fmask_decompress_missing_mrt1_count <- 1
@@ -177,6 +221,30 @@ def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]
             panic("expected mixed risk to be high")
         if mixed_risk.recommended_profile.name != fmask_null_read_profile().name:
             panic("expected metadata-hit recommendation to take priority")
+
+
+@test
+def ufc_trace_fmask_metadata_classifier_marks_single_sample_alias() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: mutable RenderCheckpoint = empty_checkpoint()
+        summary.last_render_samples <- 1
+        summary.last_fmask_addr <- 0x26f408000
+        summary.last_cmask_addr <- 0x26f408000
+        metadata_class: FmaskMetadataClass = ufc_trace_fmask_metadata_class(summary)
+        if metadata_class.kind != fmask_metadata_single_sample_alias():
+            panic("expected single-sample alias class")
+        if not metadata_class.suspicious:
+            panic("expected single-sample alias to be suspicious")
+
+        separated: mutable RenderCheckpoint = empty_checkpoint()
+        separated.last_render_samples <- 4
+        separated.last_fmask_addr <- 0x26f408000
+        separated.last_cmask_addr <- 0x26f400000
+        separated_class: FmaskMetadataClass = ufc_trace_fmask_metadata_class(separated)
+        if separated_class.kind != fmask_metadata_separate():
+            panic("expected separate metadata class")
+        if separated_class.suspicious:
+            panic("expected separate metadata to be non-suspicious")
 
 
 @test

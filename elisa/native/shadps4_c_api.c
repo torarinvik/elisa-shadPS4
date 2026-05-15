@@ -14,6 +14,8 @@
 
 static char shadps4_elisa_error[512];
 static char shadps4_elisa_last_log[1024];
+static char shadps4_elisa_log_path_ring[8][1024];
+static int shadps4_elisa_log_path_ring_index;
 static char* shadps4_elisa_file_buffer;
 
 static void shadps4_elisa_set_error(const char* message) {
@@ -37,7 +39,11 @@ const char* shadps4_elisa_last_error(void) {
 }
 
 const char* shadps4_elisa_last_log_path(void) {
-    return shadps4_elisa_last_log;
+    shadps4_elisa_log_path_ring_index = (shadps4_elisa_log_path_ring_index + 1) % 8;
+    snprintf(shadps4_elisa_log_path_ring[shadps4_elisa_log_path_ring_index],
+             sizeof(shadps4_elisa_log_path_ring[shadps4_elisa_log_path_ring_index]), "%s",
+             shadps4_elisa_last_log);
+    return shadps4_elisa_log_path_ring[shadps4_elisa_log_path_ring_index];
 }
 
 int shadps4_elisa_find_ufc1(char* out_path, uint64_t out_path_cap) {
@@ -87,6 +93,45 @@ static void shadps4_elisa_apply_trace_env(int null_fmask_reads, int fmask_decomp
     if (videoout_unorm) {
         setenv("SHADPS4_VIDEOOUT_UNORM", "1", 1);
     }
+}
+
+static const char* shadps4_elisa_select_binary(void) {
+    const char* override = getenv("SHADPS4_ELISA_BINARY");
+    if (override != NULL && override[0] != 0) {
+        return override;
+    }
+    if (access("./build-codex-make/shadps4", X_OK) == 0) {
+        return "./build-codex-make/shadps4";
+    }
+    return "./build/shadps4";
+}
+
+static void shadps4_elisa_warn_stale_build_cache(void) {
+    FILE* file = fopen("./build/CMakeCache.txt", "rb");
+    if (file == NULL) {
+        return;
+    }
+
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        fclose(file);
+        return;
+    }
+
+    char line[2048];
+    while (fgets(line, sizeof(line), file) != NULL) {
+        if (strncmp(line, "CMAKE_HOME_DIRECTORY:INTERNAL=", 30) == 0) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (strstr(line, cwd) == NULL) {
+                fprintf(stderr,
+                        "ELISA_TRACE build_cache_warning path=./build/CMakeCache.txt "
+                        "expected_root=\"%s\" cache_line=\"%s\"\n",
+                        cwd, line);
+            }
+            break;
+        }
+    }
+    fclose(file);
 }
 
 static void shadps4_elisa_profile_flags(const char* profile, int* null_fmask_reads,
@@ -163,7 +208,10 @@ static int shadps4_elisa_run_ufc_trace_impl(const char* root_dir, const char* pr
         chdir(root);
         shadps4_elisa_apply_trace_env(null_fmask_reads, fmask_decompress_in_place,
                                       compositor_null_layer, videoout_unorm);
-        execl("./build/shadps4", "shadps4", "--game", "Games/CUSA00264", (char*)NULL);
+        shadps4_elisa_warn_stale_build_cache();
+        const char* binary_path = shadps4_elisa_select_binary();
+        fprintf(stderr, "ELISA_TRACE binary_path=%s\n", binary_path);
+        execl(binary_path, "shadps4", "--game", "Games/CUSA00264", (char*)NULL);
         _exit(127);
     }
 
@@ -234,8 +282,84 @@ int shadps4_elisa_run_ufc_trace_flags(const char* root_dir, const char* profile,
                                             out_exit_code, out_timed_out);
 }
 
+static int shadps4_elisa_line_contains(const char* line, size_t line_len, const char* needle) {
+    const size_t needle_len = strlen(needle);
+    if (needle_len == 0) {
+        return 1;
+    }
+    if (line_len < needle_len) {
+        return 0;
+    }
+    for (size_t index = 0; index + needle_len <= line_len; ++index) {
+        if (memcmp(line + index, needle, needle_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int shadps4_elisa_keep_trace_line(const char* line, size_t line_len) {
+    const int trace_render_evidence =
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER render_target") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER depth_target") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER metadata_register") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER metadata_texture_read") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER fmask_decompress") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER fmask_decompress_missing_mrt1") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER image_binding_null") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER compositor_null_layer");
+    return shadps4_elisa_line_contains(line, line_len, "ELISA_TRACE") || trace_render_evidence ||
+           shadps4_elisa_line_contains(line, line_len, "TRACE_VIDEO_OUT") ||
+           shadps4_elisa_line_contains(line, line_len, "GPU command diagnostics:") ||
+           shadps4_elisa_line_contains(line, line_len, "GPU command [") ||
+           shadps4_elisa_line_contains(line, line_len, "Compiling cs shader") ||
+           shadps4_elisa_line_contains(line, line_len, "Compiling vs shader") ||
+           shadps4_elisa_line_contains(line, line_len, "Compiling graphics pipeline") ||
+           shadps4_elisa_line_contains(line, line_len, "Compiling compute pipeline");
+}
+
+static char* shadps4_elisa_filter_trace_log(char* input, size_t input_size, size_t* out_size) {
+    const char* header = "ELISA_TRACE log_filter mode=render-evidence\n";
+    const size_t header_len = strlen(header);
+    char* output = (char*)malloc(input_size + header_len + 1);
+    if (output == NULL) {
+        return NULL;
+    }
+
+    size_t output_size = 0;
+    memcpy(output + output_size, header, header_len);
+    output_size += header_len;
+
+    size_t line_start = 0;
+    size_t omitted_lines = 0;
+    for (size_t index = 0; index <= input_size; ++index) {
+        if (index == input_size || input[index] == '\n') {
+            size_t line_len = index - line_start;
+            if (shadps4_elisa_keep_trace_line(input + line_start, line_len)) {
+                memcpy(output + output_size, input + line_start, line_len);
+                output_size += line_len;
+                output[output_size++] = '\n';
+            } else if (line_len > 0) {
+                omitted_lines += 1;
+            }
+            line_start = index + 1;
+        }
+    }
+
+    char footer[96];
+    int footer_len = snprintf(footer, sizeof(footer),
+                              "ELISA_TRACE log_filter omitted_lines=%zu\n", omitted_lines);
+    if (footer_len > 0 && (size_t)footer_len < sizeof(footer)) {
+        memcpy(output + output_size, footer, (size_t)footer_len);
+        output_size += (size_t)footer_len;
+    }
+    output[output_size] = 0;
+    *out_size = output_size;
+    return output;
+}
+
 const char* shadps4_elisa_read_file(const char* path) {
-    const long max_trace_bytes = 2 * 1024 * 1024;
+    const long filter_threshold_bytes = 128 * 1024;
     if (path == NULL) {
         shadps4_elisa_set_error("missing file path");
         return "";
@@ -256,26 +380,36 @@ const char* shadps4_elisa_read_file(const char* path) {
         shadps4_elisa_set_error("failed to measure file");
         return "";
     }
-    long start = 0;
-    if (size > max_trace_bytes) {
-        start = size - max_trace_bytes;
-    }
-    if (fseek(file, start, SEEK_SET) != 0) {
+    free(shadps4_elisa_file_buffer);
+    if (fseek(file, 0, SEEK_SET) != 0) {
         fclose(file);
-        shadps4_elisa_set_error("failed to seek trace tail");
+        shadps4_elisa_set_error("failed to seek trace");
         return "";
     }
-    long read_size = size - start;
-    free(shadps4_elisa_file_buffer);
-    shadps4_elisa_file_buffer = (char*)malloc((size_t)read_size + 1);
-    if (shadps4_elisa_file_buffer == NULL) {
+    char* raw_buffer = (char*)malloc((size_t)size + 1);
+    if (raw_buffer == NULL) {
         fclose(file);
         shadps4_elisa_set_error("failed to allocate file buffer");
         return "";
     }
-    size_t read_count = fread(shadps4_elisa_file_buffer, 1, (size_t)read_size, file);
+    size_t read_count = fread(raw_buffer, 1, (size_t)size, file);
     fclose(file);
-    shadps4_elisa_file_buffer[read_count] = 0;
+    raw_buffer[read_count] = 0;
+
+    if (size <= filter_threshold_bytes) {
+        shadps4_elisa_file_buffer = raw_buffer;
+        shadps4_elisa_set_error(NULL);
+        return shadps4_elisa_file_buffer;
+    }
+
+    size_t filtered_size = 0;
+    shadps4_elisa_file_buffer = shadps4_elisa_filter_trace_log(raw_buffer, read_count, &filtered_size);
+    free(raw_buffer);
+    if (shadps4_elisa_file_buffer == NULL) {
+        shadps4_elisa_set_error("failed to allocate filtered trace buffer");
+        return "";
+    }
+    (void)filtered_size;
     shadps4_elisa_set_error(NULL);
     return shadps4_elisa_file_buffer;
 }
