@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <deque>
 #include <cstdlib>
 #include <cstring>
@@ -124,7 +125,7 @@ struct UploadJob {
     int tick = 0; // Used to skip the first frame when destroying to await the current frame to draw
 };
 
-static bool g_is_worker_running = false;
+static std::atomic_bool g_is_worker_running = false;
 static std::jthread g_worker_thread;
 static std::condition_variable g_worker_cv;
 
@@ -148,79 +149,81 @@ Inner::~Inner() {
 
 void WorkerLoop() {
     Common::SetCurrentThreadName("shadPS4:ImGuiTextureManager");
-    std::mutex mtx;
-    while (g_is_worker_running) {
-        std::unique_lock lk{mtx};
-        g_worker_cv.wait(lk);
-        if (!g_is_worker_running) {
-            break;
-        }
-        while (true) {
-            g_job_list_mtx.lock();
-            if (g_job_list.empty()) {
-                g_job_list_mtx.unlock();
+    while (true) {
+        Job job{};
+        {
+            std::unique_lock lk{g_job_list_mtx};
+            g_worker_cv.wait(lk, [] {
+                return !g_is_worker_running.load(std::memory_order_acquire) ||
+                       !g_job_list.empty();
+            });
+            if (!g_is_worker_running.load(std::memory_order_acquire) && g_job_list.empty()) {
                 break;
             }
-            auto [core, png_raw, path] = std::move(g_job_list.front());
+            job = std::move(g_job_list.front());
             g_job_list.pop_front();
-            g_job_list_mtx.unlock();
-
-            if (EmulatorSettings.IsVkCrashDiagnosticEnabled()) {
-                // FIXME: Crash diagnostic hangs when building the command buffer here
-                ReleaseInner(core);
-                continue;
-            }
-
-            if (!path.empty()) { // Decode PNG from file
-                Common::FS::IOFile file(path, Common::FS::FileAccessMode::Read);
-                if (!file.IsOpen()) {
-                    LOG_ERROR(ImGui, "Failed to open PNG file: {}", path.string());
-                    ReleaseInner(core);
-                    continue;
-                }
-                png_raw.resize(file.GetSize());
-                file.Seek(0);
-                file.ReadRaw<u8>(png_raw.data(), png_raw.size());
-                file.Close();
-            }
-
-            int width = 0;
-            int height = 0;
-            const stbi_uc* pixels =
-                stbi_load_from_memory(png_raw.data(), png_raw.size(), &width, &height, nullptr, 4);
-            if (pixels == nullptr || width <= 0 || height <= 0) {
-                LOG_ERROR(ImGui, "Failed to decode PNG texture");
-                stbi_image_free((void*)pixels);
-                ReleaseInner(core);
-                continue;
-            }
-
-            auto texture = Vulkan::UploadTexture(pixels, vk::Format::eR8G8B8A8Unorm, width, height,
-                                                 width * height * 4 * sizeof(stbi_uc));
-            stbi_image_free((void*)pixels);
-
-            core->upload_data = texture;
-            core->width = width;
-            core->height = height;
-
-            std::unique_lock upload_lk{g_upload_mtx};
-            g_upload_list.emplace_back(UploadJob{
-                .core = core,
-            });
         }
+
+        auto [core, png_raw, path] = std::move(job);
+
+        if (EmulatorSettings.IsVkCrashDiagnosticEnabled()) {
+            // FIXME: Crash diagnostic hangs when building the command buffer here
+            ReleaseInner(core);
+            continue;
+        }
+
+        if (!path.empty()) { // Decode PNG from file
+            Common::FS::IOFile file(path, Common::FS::FileAccessMode::Read);
+            if (!file.IsOpen()) {
+                LOG_ERROR(ImGui, "Failed to open PNG file: {}", path.string());
+                ReleaseInner(core);
+                continue;
+            }
+            png_raw.resize(file.GetSize());
+            file.Seek(0);
+            file.ReadRaw<u8>(png_raw.data(), png_raw.size());
+            file.Close();
+        }
+
+        int width = 0;
+        int height = 0;
+        const stbi_uc* pixels =
+            stbi_load_from_memory(png_raw.data(), png_raw.size(), &width, &height, nullptr, 4);
+        if (pixels == nullptr || width <= 0 || height <= 0) {
+            LOG_ERROR(ImGui, "Failed to decode PNG texture");
+            stbi_image_free((void*)pixels);
+            ReleaseInner(core);
+            continue;
+        }
+
+        auto texture = Vulkan::UploadTexture(pixels, vk::Format::eR8G8B8A8Unorm, width, height,
+                                             width * height * 4 * sizeof(stbi_uc));
+        stbi_image_free((void*)pixels);
+
+        core->upload_data = texture;
+        core->width = width;
+        core->height = height;
+
+        std::unique_lock upload_lk{g_upload_mtx};
+        g_upload_list.emplace_back(UploadJob{
+            .core = core,
+        });
     }
 }
 
 void StartWorker() {
     ASSERT(!g_is_worker_running);
-    g_is_worker_running = true;
+    g_is_worker_running.store(true, std::memory_order_release);
     g_worker_thread = std::jthread(WorkerLoop);
 }
 
 void StopWorker() {
     ASSERT(g_is_worker_running);
-    g_is_worker_running = false;
-    g_worker_cv.notify_one();
+    g_is_worker_running.store(false, std::memory_order_release);
+    g_worker_cv.notify_all();
+    if (g_worker_thread.joinable()) {
+        g_worker_thread.join();
+    }
 }
 
 void DecodePngTexture(std::vector<u8> data, Inner* core) {

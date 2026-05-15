@@ -167,6 +167,7 @@ GraphicsPipeline::GraphicsPipeline(
 
     boost::container::static_vector<vk::PipelineShaderStageCreateInfo, MaxShaderStages>
         shader_stages;
+    boost::container::static_vector<vk::ShaderModule, 2> aux_shader_modules;
     auto stage = u32(Shader::LogicalStage::Vertex);
     if (infos[stage]) {
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
@@ -197,9 +198,11 @@ GraphicsPipeline::GraphicsPipeline(
             const auto& fs_info = runtime_infos[u32(Shader::LogicalStage::Fragment)].fs_info;
             sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, vs_info, fs_info);
         }
+        const vk::ShaderModule module = CompileSPV(sdata.tcs, instance.GetDevice());
+        aux_shader_modules.push_back(module);
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
-            .module = CompileSPV(sdata.tcs, instance.GetDevice()),
+            .module = module,
             .pName = "main",
         });
     }
@@ -217,9 +220,11 @@ GraphicsPipeline::GraphicsPipeline(
             sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
                 AuxShaderType::PassthroughTES, vs_info, fs_info);
         }
+        const vk::ShaderModule module = CompileSPV(sdata.tes, instance.GetDevice());
+        aux_shader_modules.push_back(module);
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
-            .module = CompileSPV(sdata.tes, instance.GetDevice()),
+            .module = module,
             .pName = "main",
         });
     }
@@ -377,6 +382,9 @@ GraphicsPipeline::GraphicsPipeline(
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
+    for (const vk::ShaderModule module : aux_shader_modules) {
+        device.destroyShaderModule(module);
+    }
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
 }
 

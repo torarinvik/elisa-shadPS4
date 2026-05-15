@@ -270,7 +270,12 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 
     vk::ShaderModule module{};
 
-    auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
+    const ProgramKey program_key{
+        .hash = program->info.pgm_hash,
+        .stage = program->info.stage,
+        .logical_stage = program->info.l_stage,
+    };
+    auto [it_pgm, new_program] = program_cache.try_emplace(program_key);
     if (new_program) {
         module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <unordered_map>
 #include "common/types.h"
 #include "video_core/amdgpu/tiling.h"
 #include "video_core/buffer_cache/buffer.h"
@@ -14,7 +15,27 @@ struct Image;
 class StreamBuffer;
 
 class TileManager {
-    static constexpr size_t NUM_BPPS = 5;
+    struct TilingPipelineKey {
+        AmdGpu::TileMode tile_mode{};
+        AmdGpu::ArrayMode array_mode{};
+        u32 num_bits{};
+        u32 num_samples{};
+        bool is_tiler{};
+
+        bool operator==(const TilingPipelineKey&) const = default;
+    };
+
+    struct TilingPipelineKeyHash {
+        size_t operator()(const TilingPipelineKey& key) const noexcept {
+            size_t seed = std::hash<u32>{}(static_cast<u32>(key.tile_mode));
+            seed ^= std::hash<u32>{}(static_cast<u32>(key.array_mode)) + 0x9e3779b9 + (seed << 6) +
+                    (seed >> 2);
+            seed ^= std::hash<u32>{}(key.num_bits) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= std::hash<u32>{}(key.num_samples) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= std::hash<bool>{}(key.is_tiler) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            return seed;
+        }
+    };
 
 public:
     using ScratchBuffer = std::pair<vk::Buffer, VmaAllocation>;
@@ -39,8 +60,8 @@ private:
     StreamBuffer& stream_buffer;
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout pl_layout;
-    std::array<vk::UniquePipeline, AmdGpu::NUM_TILE_MODES * NUM_BPPS> detilers{};
-    std::array<vk::UniquePipeline, AmdGpu::NUM_TILE_MODES * NUM_BPPS> tilers{};
+    std::unordered_map<TilingPipelineKey, vk::UniquePipeline, TilingPipelineKeyHash>
+        tiling_pipelines{};
 };
 
 } // namespace VideoCore

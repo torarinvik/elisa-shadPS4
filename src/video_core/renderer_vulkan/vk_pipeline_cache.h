@@ -63,6 +63,25 @@ struct Program {
     }
 };
 
+struct ProgramKey {
+    u64 hash{};
+    Shader::Stage stage{};
+    Shader::LogicalStage logical_stage{};
+
+    bool operator==(const ProgramKey&) const = default;
+};
+
+struct ProgramKeyHash {
+    size_t operator()(const ProgramKey& key) const noexcept {
+        size_t seed = std::hash<u64>{}(key.hash);
+        seed ^= std::hash<u32>{}(static_cast<u32>(key.stage)) + 0x9e3779b9 + (seed << 6) +
+                (seed >> 2);
+        seed ^= std::hash<u32>{}(static_cast<u32>(key.logical_stage)) + 0x9e3779b9 +
+                (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
 class PipelineCache {
 public:
     explicit PipelineCache(const Instance& instance, Scheduler& scheduler,
@@ -122,7 +141,7 @@ private:
     vk::UniquePipelineLayout pipeline_layout;
     Shader::Profile profile{};
     Shader::Pools pools;
-    tsl::robin_map<size_t, std::unique_ptr<Program>> program_cache;
+    tsl::robin_map<ProgramKey, std::unique_ptr<Program>, ProgramKeyHash> program_cache;
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};

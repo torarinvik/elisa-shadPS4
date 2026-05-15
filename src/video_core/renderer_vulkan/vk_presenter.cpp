@@ -322,6 +322,7 @@ static bool ConvertReadbackToRgba8(const ScreenshotReadback& readback, std::vect
         return false;
     }
 
+    readback.buffer.Invalidate(0, byte_size);
     const auto src =
         std::span<const u8>{readback.buffer.mapped_data.data(), static_cast<size_t>(byte_size)};
     out_rgba.resize(static_cast<size_t>(byte_size));

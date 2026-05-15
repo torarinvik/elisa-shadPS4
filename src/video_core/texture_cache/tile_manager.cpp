@@ -12,6 +12,8 @@
 
 #include "video_core/host_shaders/tiling_comp.h"
 
+#include "common/div_ceil.h"
+
 #include <magic_enum/magic_enum.hpp>
 #include <vk_mem_alloc.h>
 
@@ -23,6 +25,11 @@ struct TilingInfo {
     u32 num_mips;
     std::array<ImageInfo::MipInfo, 16> mips;
 };
+
+static u32 TilingDispatchGroups(u32 byte_size, u32 num_bits) {
+    const u64 elements = Common::DivCeil(static_cast<u64>(byte_size) * 8, static_cast<u64>(num_bits));
+    return static_cast<u32>(Common::DivCeil(elements, 64ULL));
+}
 
 TileManager::TileManager(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                          StreamBuffer& stream_buffer_)
@@ -99,9 +106,19 @@ TileManager::ScratchBuffer TileManager::GetScratchBuffer(u32 size) {
 }
 
 vk::Pipeline TileManager::GetTilingPipeline(const ImageInfo& info, bool is_tiler) {
-    const u32 pl_id = u32(info.tile_mode) * NUM_BPPS + std::bit_width(info.num_bits) - 4;
-    auto& tiling_pipelines = is_tiler ? tilers : detilers;
-    if (auto pipeline = *tiling_pipelines[pl_id]; pipeline != VK_NULL_HANDLE) {
+    const TilingPipelineKey key{
+        .tile_mode = info.tile_mode,
+        .array_mode = info.array_mode,
+        .num_bits = info.num_bits,
+        .num_samples = info.num_samples,
+        .is_tiler = is_tiler,
+    };
+    auto [it, inserted] = tiling_pipelines.try_emplace(key);
+    if (!inserted && *it->second != VK_NULL_HANDLE) {
+        return *it->second;
+    }
+    auto& pipeline_slot = it->second;
+    if (auto pipeline = *pipeline_slot; pipeline != VK_NULL_HANDLE) {
         return pipeline;
     }
 
@@ -156,9 +173,9 @@ vk::Pipeline TileManager::GetTilingPipeline(const ImageInfo& info, bool is_tiler
         device.createComputePipelineUnique(VK_NULL_HANDLE, compute_pipeline_ci);
     ASSERT_MSG(result == vk::Result::eSuccess, "Detiler pipeline creation failed {}",
                vk::to_string(result));
-    tiling_pipelines[pl_id] = std::move(pipeline);
+    pipeline_slot = std::move(pipeline);
     device.destroyShaderModule(module);
-    return *tiling_pipelines[pl_id];
+    return *pipeline_slot;
 }
 
 TileManager::Result TileManager::DetileImage(vk::Buffer in_buffer, u32 in_offset,
@@ -236,7 +253,7 @@ TileManager::Result TileManager::DetileImage(vk::Buffer in_buffer, u32 in_offset
     }};
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pl_layout, 0, set_writes);
 
-    const auto dim_x = (info.guest_size / (info.num_bits / 8)) / 64;
+    const auto dim_x = TilingDispatchGroups(info.guest_size, info.num_bits);
     cmdbuf.dispatch(dim_x, 1, 1);
     return {out_buffer, 0};
 }
@@ -271,6 +288,7 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
         .range = sizeof(params),
     };
 
+    const u32 valid_size = std::min(copy_size, info.guest_size);
     const auto [temp_buffer, temp_allocation] = GetScratchBuffer(info.guest_size);
     scheduler.DeferOperation([this, temp_buffer, temp_allocation]() {
         vmaDestroyBuffer(instance.GetAllocator(), temp_buffer, temp_allocation);
@@ -284,13 +302,13 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
     const vk::DescriptorBufferInfo tiled_buffer_info{
         .buffer = out_buffer,
         .offset = out_offset,
-        .range = info.guest_size,
+        .range = valid_size,
     };
 
     const vk::DescriptorBufferInfo linear_buffer_info{
         .buffer = temp_buffer,
         .offset = 0,
-        .range = info.guest_size,
+        .range = valid_size,
     };
 
     const std::array<vk::WriteDescriptorSet, 3> set_writes = {{
@@ -321,7 +339,7 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
     }};
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pl_layout, 0, set_writes);
 
-    const auto dim_x = (info.guest_size / (info.num_bits / 8)) / 64;
+    const auto dim_x = TilingDispatchGroups(valid_size, info.num_bits);
     cmdbuf.dispatch(dim_x, 1, 1);
 }
 

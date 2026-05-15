@@ -158,6 +158,7 @@ public:
     }
 
     void Fill(u64 offset, u32 num_bytes, u32 value);
+    void Invalidate(u64 offset, u64 size) const;
 
 public:
     VAddr cpu_addr = 0;

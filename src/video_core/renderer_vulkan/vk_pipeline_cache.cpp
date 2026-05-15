@@ -520,6 +520,7 @@ bool PipelineCache::RefreshGraphicsStages() {
         return true;
     };
 
+    runtime_infos = {};
     infos.fill(nullptr);
     modules.fill(nullptr);
     const auto result = bind_stage(Stage::Fragment, LogicalStage::Fragment);
@@ -595,7 +596,9 @@ bool PipelineCache::RefreshGraphicsStages() {
         }
         break;
     case AmdGpu::ShaderStageEnable::VgtStages::Vs:
-        bind_stage(Stage::Vertex, LogicalStage::Vertex);
+        if (!bind_stage(Stage::Vertex, LogicalStage::Vertex)) {
+            return false;
+        }
         break;
     default:
         UNREACHABLE_MSG("unhandled stage_en: {}", (u32)regs.stage_enable.raw);
@@ -663,7 +666,12 @@ PipelineCache::Result PipelineCache::GetProgram(Stage stage, LogicalStage l_stag
                                                 const Shader::ShaderParams& params,
                                                 Shader::Backend::Bindings& binding) {
     auto runtime_info = BuildRuntimeInfo(stage, l_stage);
-    auto [it_pgm, new_program] = program_cache.try_emplace(params.hash);
+    const ProgramKey program_key{
+        .hash = params.hash,
+        .stage = stage,
+        .logical_stage = l_stage,
+    };
+    auto [it_pgm, new_program] = program_cache.try_emplace(program_key);
     if (new_program) {
         it_pgm.value() = std::make_unique<Program>(stage, l_stage, params);
         auto& program = it_pgm.value();
