@@ -125,6 +125,29 @@ struct RenderCheckpoint:
     last_screenshot_near_black_pct_x100: mutable i64
     min_screenshot_avg_luma_x100: mutable i64
     max_screenshot_avg_luma_x100: mutable i64
+    black_watchdog_count: mutable i64
+    black_watchdog_gameonly_count: mutable i64
+    black_watchdog_frameimage_count: mutable i64
+    black_watchdog_withoverlays_count: mutable i64
+    black_watchdog_black_count: mutable i64
+    black_watchdog_nonblack_gameonly_count: mutable i64
+    black_watchdog_persistent_abort_count: mutable i64
+    black_watchdog_upstream_guest_black_count: mutable i64
+    black_watchdog_vulkan_black_guest_nonblack_count: mutable i64
+    last_black_watchdog_stage: mutable i64
+    last_black_watchdog_frame: mutable i64
+    last_black_watchdog_consecutive: mutable i64
+    last_black_watchdog_avg_luma_x100: mutable i64
+    last_black_watchdog_max_luma: mutable i64
+    last_black_watchdog_near_black_pct_x100: mutable i64
+    last_black_watchdog_guest_avg_luma_x100: mutable i64
+    last_black_watchdog_guest_max_luma: mutable i64
+    last_black_watchdog_guest_near_black_pct_x100: mutable i64
+    last_black_watchdog_last_writer: mutable i64
+    last_black_watchdog_last_writer_seq: mutable i64
+    last_black_watchdog_last_writer_addr: mutable i64
+    last_black_watchdog_videoout_addr: mutable i64
+    last_black_watchdog_image_id: mutable i64
 
 struct FmaskRisk:
     score: i64
@@ -200,6 +223,36 @@ def fmask_metadata_single_sample_alias() -> i64:
 def fmask_metadata_single_sample_present() -> i64:
     return 4
 
+def black_watchdog_stage_unknown() -> i64:
+    return 0
+
+def black_watchdog_stage_gameonly() -> i64:
+    return 1
+
+def black_watchdog_stage_frameimage() -> i64:
+    return 2
+
+def black_watchdog_stage_withoverlays() -> i64:
+    return 3
+
+def black_watchdog_writer_unknown() -> i64:
+    return 0
+
+def black_watchdog_writer_bind_storage_videoout() -> i64:
+    return 1
+
+def black_watchdog_writer_fill_buffer() -> i64:
+    return 2
+
+def black_watchdog_writer_copy_buffer_dst() -> i64:
+    return 3
+
+def black_watchdog_writer_copy_buffer_src() -> i64:
+    return 4
+
+def black_watchdog_writer_invalidate_gpu() -> i64:
+    return 5
+
 def ufc1_game_id() -> GameId:
     return GameId("CUSA00264")
 
@@ -240,7 +293,11 @@ def empty_checkpoint() -> RenderCheckpoint:
         -1, -1, -1, -1, -1, -1, render_format_unknown(),
         0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1,
         0, -1,
-        0, 0, 0, -1, -1, -1, -1, -1
+        0, 0, 0, -1, -1, -1, -1, -1,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        black_watchdog_stage_unknown(), -1, 0,
+        -1, -1, -1, -1, -1, -1,
+        black_watchdog_writer_unknown(), -1, -1, -1, -1
     )
 
 def trace_byte_at(text: cstr, index: i64) -> u8:
@@ -387,6 +444,28 @@ def trace_render_format_kind(text: cstr, start: i64, end: i64) -> i64:
         return render_format_r32_sfloat()
     return render_format_unknown()
 
+def trace_black_watchdog_stage(text: cstr, start: i64, end: i64) -> i64:
+    if trace_line_contains(text, start, end, "stage=GameOnly"):
+        return black_watchdog_stage_gameonly()
+    if trace_line_contains(text, start, end, "stage=FrameImage"):
+        return black_watchdog_stage_frameimage()
+    if trace_line_contains(text, start, end, "stage=WithOverlays"):
+        return black_watchdog_stage_withoverlays()
+    return black_watchdog_stage_unknown()
+
+def trace_black_watchdog_writer(text: cstr, start: i64, end: i64) -> i64:
+    if trace_line_contains(text, start, end, "last_writer=BindStorageVideoOut"):
+        return black_watchdog_writer_bind_storage_videoout()
+    if trace_line_contains(text, start, end, "last_writer=FillBuffer"):
+        return black_watchdog_writer_fill_buffer()
+    if trace_line_contains(text, start, end, "last_writer=CopyBufferDst"):
+        return black_watchdog_writer_copy_buffer_dst()
+    if trace_line_contains(text, start, end, "last_writer=CopyBufferSrc"):
+        return black_watchdog_writer_copy_buffer_src()
+    if trace_line_contains(text, start, end, "last_writer=InvalidateMemoryFromGPU"):
+        return black_watchdog_writer_invalidate_gpu()
+    return black_watchdog_writer_unknown()
+
 def ufc_trace_mark_suspicious(summary: mutable RenderCheckpoint&, pass_index: i64) -> void:
     summary.suspicious_score <- summary.suspicious_score + 1
     if summary.first_suspicious_pass < 0:
@@ -492,8 +571,52 @@ def ufc_trace_record_screenshot(summary: mutable RenderCheckpoint&, text: cstr, 
         if avg_luma_x100 >= 2500 and near_black_x100 < 5000:
             summary.bright_screenshot_count <- summary.bright_screenshot_count + 1
 
+def ufc_trace_record_black_watchdog(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
+    stage: i64 = trace_black_watchdog_stage(text, start, end)
+    black: bool = trace_line_contains(text, start, end, "black=true") or trace_line_contains(text, start, end, "persistent unexpected black")
+    guest_near_black_x100: i64 = trace_scaled_decimal_after(text, start, end, "guest_near_black=", -1)
+    guest_max_luma: i64 = trace_decimal_after(text, start, end, "guest_max_luma=", -1)
+    guest_nonblack: i64 = trace_decimal_after(text, start, end, "guest_nonblack=", -1)
+    summary.black_watchdog_count <- summary.black_watchdog_count + 1
+    summary.last_black_watchdog_stage <- stage
+    summary.last_black_watchdog_frame <- trace_decimal_after(text, start, end, "frame=", summary.last_black_watchdog_frame)
+    summary.last_black_watchdog_consecutive <- trace_decimal_after(text, start, end, "consecutive=", summary.last_black_watchdog_consecutive)
+    summary.last_black_watchdog_avg_luma_x100 <- trace_scaled_decimal_after(text, start, end, "avg_luma=", summary.last_black_watchdog_avg_luma_x100)
+    summary.last_black_watchdog_max_luma <- trace_decimal_after(text, start, end, "max_luma=", summary.last_black_watchdog_max_luma)
+    summary.last_black_watchdog_near_black_pct_x100 <- trace_scaled_decimal_after(text, start, end, "near_black=", summary.last_black_watchdog_near_black_pct_x100)
+    summary.last_black_watchdog_guest_avg_luma_x100 <- trace_scaled_decimal_after(text, start, end, "guest_avg_luma=", summary.last_black_watchdog_guest_avg_luma_x100)
+    summary.last_black_watchdog_guest_max_luma <- guest_max_luma
+    summary.last_black_watchdog_guest_near_black_pct_x100 <- guest_near_black_x100
+    summary.last_black_watchdog_last_writer <- trace_black_watchdog_writer(text, start, end)
+    summary.last_black_watchdog_last_writer_seq <- trace_decimal_after(text, start, end, "last_writer_seq=", summary.last_black_watchdog_last_writer_seq)
+    summary.last_black_watchdog_last_writer_addr <- trace_hex_after(text, start, end, "last_writer_addr=", summary.last_black_watchdog_last_writer_addr)
+    summary.last_black_watchdog_videoout_addr <- trace_hex_after(text, start, end, "videoout_addr=", summary.last_black_watchdog_videoout_addr)
+    summary.last_black_watchdog_image_id <- trace_decimal_after(text, start, end, "image_id=", summary.last_black_watchdog_image_id)
+    if stage == black_watchdog_stage_gameonly():
+        summary.black_watchdog_gameonly_count <- summary.black_watchdog_gameonly_count + 1
+        if not black:
+            summary.black_watchdog_nonblack_gameonly_count <- summary.black_watchdog_nonblack_gameonly_count + 1
+    if stage == black_watchdog_stage_frameimage():
+        summary.black_watchdog_frameimage_count <- summary.black_watchdog_frameimage_count + 1
+    if stage == black_watchdog_stage_withoverlays():
+        summary.black_watchdog_withoverlays_count <- summary.black_watchdog_withoverlays_count + 1
+    if black:
+        summary.black_watchdog_black_count <- summary.black_watchdog_black_count + 1
+        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        if stage == black_watchdog_stage_gameonly():
+            if guest_near_black_x100 >= 9950 and guest_max_luma <= 8:
+                summary.black_watchdog_upstream_guest_black_count <- summary.black_watchdog_upstream_guest_black_count + 1
+            else:
+                if guest_nonblack > 0 or guest_max_luma > 8:
+                    summary.black_watchdog_vulkan_black_guest_nonblack_count <- summary.black_watchdog_vulkan_black_guest_nonblack_count + 1
+
 def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     ufc_trace_record_compile_line(summary, text, start, end)
+    if trace_line_contains(text, start, end, "TRACE_BLACK_WATCHDOG"):
+        ufc_trace_record_black_watchdog(summary, text, start, end)
+    if trace_line_contains(text, start, end, "Strict black-screen watchdog: persistent unexpected black"):
+        summary.black_watchdog_persistent_abort_count <- summary.black_watchdog_persistent_abort_count + 1
+        ufc_trace_record_black_watchdog(summary, text, start, end)
     if trace_line_contains(text, start, end, "ELISA_TRACE build_cache_warning"):
         summary.launch_build_cache_warning_count <- summary.launch_build_cache_warning_count + 1
     if trace_line_contains(text, start, end, "ELISA_TRACE binary_path=./build-codex-make/shadps4"):
@@ -678,6 +801,8 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("gpu_diagnostics dumps=%lld commands=%lld draws=%lld indexed_draws=%lld indirect_draws=%lld dispatches=%lld swapchain=%lld last_serial=%lld\n", result.render.gpu_diagnostic_dump_count, result.render.gpu_command_count, result.render.gpu_command_draw_count, result.render.gpu_command_indexed_draw_count, result.render.gpu_command_indirect_draw_count, result.render.gpu_command_dispatch_count, result.render.gpu_command_swapchain_count, result.render.last_gpu_command_serial)
             printf("last_gpu_draw vertices=%lld indices=%lld last_dispatch=%lldx%lldx%lld\n", result.render.last_gpu_draw_vertices, result.render.last_gpu_draw_indices, result.render.last_gpu_dispatch_x, result.render.last_gpu_dispatch_y, result.render.last_gpu_dispatch_z)
             printf("screenshots count=%lld dark=%lld bright=%lld last_avg_luma_x100=%lld last_max_luma=%lld last_near_black_x100=%lld min_avg_luma_x100=%lld max_avg_luma_x100=%lld\n", result.render.screenshot_count, result.render.dark_screenshot_count, result.render.bright_screenshot_count, result.render.last_screenshot_avg_luma_x100, result.render.last_screenshot_max_luma, result.render.last_screenshot_near_black_pct_x100, result.render.min_screenshot_avg_luma_x100, result.render.max_screenshot_avg_luma_x100)
+            printf("black_watchdog count=%lld gameonly=%lld frameimage=%lld withoverlays=%lld black=%lld nonblack_gameonly=%lld persistent_aborts=%lld upstream_guest_black=%lld vulkan_black_guest_nonblack=%lld\n", result.render.black_watchdog_count, result.render.black_watchdog_gameonly_count, result.render.black_watchdog_frameimage_count, result.render.black_watchdog_withoverlays_count, result.render.black_watchdog_black_count, result.render.black_watchdog_nonblack_gameonly_count, result.render.black_watchdog_persistent_abort_count, result.render.black_watchdog_upstream_guest_black_count, result.render.black_watchdog_vulkan_black_guest_nonblack_count)
+            printf("black_watchdog_last stage=%lld frame=%lld consecutive=%lld avg_luma_x100=%lld max_luma=%lld near_black_x100=%lld guest_avg_luma_x100=%lld guest_max_luma=%lld guest_near_black_x100=%lld writer=%lld writer_seq=%lld writer_addr=0x%llx videoout_addr=0x%llx image_id=%lld\n", result.render.last_black_watchdog_stage, result.render.last_black_watchdog_frame, result.render.last_black_watchdog_consecutive, result.render.last_black_watchdog_avg_luma_x100, result.render.last_black_watchdog_max_luma, result.render.last_black_watchdog_near_black_pct_x100, result.render.last_black_watchdog_guest_avg_luma_x100, result.render.last_black_watchdog_guest_max_luma, result.render.last_black_watchdog_guest_near_black_pct_x100, result.render.last_black_watchdog_last_writer, result.render.last_black_watchdog_last_writer_seq, result.render.last_black_watchdog_last_writer_addr, result.render.last_black_watchdog_videoout_addr, result.render.last_black_watchdog_image_id)
             printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.image_binding_null_count, result.render.compositor_null_layer_count, result.render.metadata_register_count, result.render.fmask_decompress_missing_mrt1_count, result.render.suspicious_score, result.render.first_suspicious_pass)
             printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
             printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
@@ -704,6 +829,7 @@ def ufc_trace_print_comparison(baseline: TraceResult, experiment: TraceResult) -
             printf("comparison_metadata_reads baseline_fmask=%lld experiment_fmask=%lld baseline_null_actions=%lld experiment_null_actions=%lld\n", baseline.render.fmask_texture_read_count, experiment.render.fmask_texture_read_count, baseline.render.null_metadata_action_count, experiment.render.null_metadata_action_count)
             printf("comparison_videoout baseline_stage=%lld experiment_stage=%lld baseline_render_pass=%lld experiment_render_pass=%lld\n", baseline.render.last_videoout_stage, experiment.render.last_videoout_stage, baseline.render.last_render_pass, experiment.render.last_render_pass)
             printf("comparison_screenshots baseline_count=%lld experiment_count=%lld baseline_dark=%lld experiment_dark=%lld baseline_min_avg_luma_x100=%lld experiment_min_avg_luma_x100=%lld baseline_last_avg_luma_x100=%lld experiment_last_avg_luma_x100=%lld\n", baseline.render.screenshot_count, experiment.render.screenshot_count, baseline.render.dark_screenshot_count, experiment.render.dark_screenshot_count, baseline.render.min_screenshot_avg_luma_x100, experiment.render.min_screenshot_avg_luma_x100, baseline.render.last_screenshot_avg_luma_x100, experiment.render.last_screenshot_avg_luma_x100)
+            printf("comparison_black_watchdog baseline_black=%lld experiment_black=%lld baseline_upstream_guest_black=%lld experiment_upstream_guest_black=%lld baseline_vulkan_black_guest_nonblack=%lld experiment_vulkan_black_guest_nonblack=%lld\n", baseline.render.black_watchdog_black_count, experiment.render.black_watchdog_black_count, baseline.render.black_watchdog_upstream_guest_black_count, experiment.render.black_watchdog_upstream_guest_black_count, baseline.render.black_watchdog_vulkan_black_guest_nonblack_count, experiment.render.black_watchdog_vulkan_black_guest_nonblack_count)
             if experiment.render.dark_screenshot_count > baseline.render.dark_screenshot_count:
                 printf("comparison_visual status=worse reason=experiment_added_dark_screenshots\n")
             else:

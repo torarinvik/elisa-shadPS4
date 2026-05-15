@@ -319,6 +319,8 @@ static int shadps4_elisa_keep_trace_line(const char* line, size_t line_len) {
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER compositor_null_layer");
     return shadps4_elisa_line_contains(line, line_len, "ELISA_TRACE") || trace_render_evidence ||
            shadps4_elisa_line_contains(line, line_len, "TRACE_VIDEO_OUT") ||
+           shadps4_elisa_line_contains(line, line_len, "TRACE_BLACK_WATCHDOG") ||
+           shadps4_elisa_line_contains(line, line_len, "Strict black-screen watchdog") ||
            shadps4_elisa_line_contains(line, line_len, "TRACE_SCREENSHOT") ||
            shadps4_elisa_line_contains(line, line_len, "GPU command diagnostics:") ||
            shadps4_elisa_line_contains(line, line_len, "GPU command [") ||

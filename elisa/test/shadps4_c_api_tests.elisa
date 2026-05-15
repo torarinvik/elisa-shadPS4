@@ -209,6 +209,52 @@ def ufc_trace_parser_summarizes_screenshot_stats() -> void can[Abort.Panic]:
 
 
 @test
+def ufc_trace_parser_summarizes_black_watchdog_stats() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        summary: RenderCheckpoint = ufc_trace_analyze_text(UFC_TRACE_BLACK_WATCHDOG_FIXTURE)
+        if summary.black_watchdog_count != 4:
+            panic("expected four watchdog lines")
+        if summary.black_watchdog_gameonly_count != 2:
+            panic("expected two game-only watchdog lines")
+        if summary.black_watchdog_frameimage_count != 2:
+            panic("expected two frame-image watchdog lines")
+        if summary.black_watchdog_withoverlays_count != 0:
+            panic("expected no overlay watchdog lines")
+        if summary.black_watchdog_black_count != 3:
+            panic("expected three black watchdog observations")
+        if summary.black_watchdog_nonblack_gameonly_count != 1:
+            panic("expected one nonblack game-only proof frame")
+        if summary.black_watchdog_persistent_abort_count != 1:
+            panic("expected one persistent watchdog abort")
+        if summary.black_watchdog_upstream_guest_black_count != 1:
+            panic("expected one upstream guest-black classification")
+        if summary.black_watchdog_vulkan_black_guest_nonblack_count != 0:
+            panic("expected no guest-nonblack/vulkan-black classification")
+        if summary.last_black_watchdog_stage != black_watchdog_stage_frameimage():
+            panic("expected last watchdog stage to be frame image")
+        if summary.last_black_watchdog_frame != 5783:
+            panic("expected last watchdog frame")
+        if summary.last_black_watchdog_consecutive != 3:
+            panic("expected last watchdog consecutive count")
+        if summary.last_black_watchdog_avg_luma_x100 != 0:
+            panic("expected black watchdog average luma")
+        if summary.last_black_watchdog_max_luma != 0:
+            panic("expected black watchdog max luma")
+        if summary.last_black_watchdog_near_black_pct_x100 != 10000:
+            panic("expected black watchdog near-black percentage")
+        if summary.last_black_watchdog_last_writer != black_watchdog_writer_bind_storage_videoout():
+            panic("expected storage-videoout writer")
+        if summary.last_black_watchdog_last_writer_seq != 44:
+            panic("expected writer sequence")
+        if summary.last_black_watchdog_last_writer_addr != 0x27eca0000:
+            panic("expected writer address")
+        if summary.last_black_watchdog_videoout_addr != 0x27eca0000:
+            panic("expected videoout address")
+        if summary.last_black_watchdog_image_id != 1:
+            panic("expected image id")
+
+
+@test
 def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]:
     can Abort.Panic:
         decompress_summary: mutable RenderCheckpoint = empty_checkpoint()
