@@ -1,9 +1,16 @@
 <!--
 SPDX-FileCopyrightText: 2025 shadPS4 Emulator Project
+SPDX-FileCopyrightText: 2026 Elisa-core port maintainers
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
-# Build shadPS4 for Windows
+# Build the Elisa-core PS4 port for Windows
+
+> [!IMPORTANT]
+> These instructions are inherited from the upstream shadPS4 layout and are being
+> adapted for this independent Elisa-core port. Executable names, paths, and
+> screenshots may still use `shadPS4` while the port is in progress. Builds from
+> this repository are not official shadPS4 builds.
 
 This tutorial reads as if you have none of the prerequisites already installed. If you do, just ignore the steps regarding installation.
 > [!WARNING]
@@ -28,22 +35,22 @@ Go through the Git for Windows installation as normal
 
 ### Cloning the source code
 
-1. Open Git for Windows, navigate to a place where you want to store the shadPS4 source code folder
+1. Open Git for Windows, navigate to a place where you want to store this repository
 2. Clone the repository by running  
-    `git clone --depth 1 --recursive https://github.com/shadps4-emu/shadPS4`
+    `git clone --depth 1 --recursive <this-repository-url>`
 
 ### Compiling with Visual Studio GUI
 
-1. Open up Visual Studio, select `Open a local folder` and select the folder with the shadPS4 source code. The folder should contain `CMakeLists.txt`
+1. Open up Visual Studio, select `Open a local folder` and select this repository folder. The folder should contain `CMakeLists.txt`
 2. Change Clang x64 Debug to Clang x64 Release if you want a regular, non-debug build.
 3. Change the project to build to shadps4.exe
 4. Build -> Build All
 
-Your shadps4.exe will be in `C:\path\to\source\Build\x64-Clang-Release\`
+Your transitional `shadps4.exe` build will be in `C:\path\to\source\Build\x64-Clang-Release\`
 
 ## Option 2: VSCode with Visual Studio Build Tools
 
-If your default IDE is VSCode, we have a fully functional example for that as well.
+If your default IDE is VSCode, this repository includes a functional example for that as well.
 
 ### Requirements
 
@@ -52,7 +59,7 @@ If your default IDE is VSCode, we have a fully functional example for that as we
 * [**CMake 4.2.3 or newer**](https://github.com/Kitware/CMake/releases/download/v4.2.3/cmake-4.2.3-windows-x86_64.msi)
 * [**Ninja 1.13.2 or newer**](https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip)
 
-**The main reason we use clang19 is because that version is used in CI for formatting.**
+**Clang 19 is used here because that version is used in CI for formatting.**
 
 ### Installs
 
@@ -114,17 +121,17 @@ Save the file as `.vsconfig` and run the following command:
 Be carefull path to vs_BuildTools.exe and .vsconfig file.
 ```
 
-__This will install the necessary components to build shadPS4.__
+__This will install the necessary components to build this port.__
 
 ### Project structure
 
 ```
-shadps4/
-  ├── shared (shadps4 main files)
-  └── shadps4.code-workspace
+elisa-core-ps4-port/
+  ├── shared (repository files)
+  └── elisa-core-ps4-port.code-workspace
 ```
 
-### Content of `shadps4.code-workspace`
+### Content of `elisa-core-ps4-port.code-workspace`
 
 ```json
 {
@@ -170,11 +177,9 @@ shadps4/
 
 ### Cloning the source code
 
-1. Open your terminal and where to shadPS4 folder: `cd shadps4\shared`
+1. Open your terminal and go to the repository folder, for example: `cd elisa-core-ps4-port\shared`
 3. Clone the repository by running  
-    `git clone --depth 1 --recursive https://github.com/shadps4-emu/shadPS4 .`
-
-_or fork link_
+    `git clone --depth 1 --recursive <this-repository-url> .`
 
 * If you have already cloned repo:
 ```bash
@@ -188,24 +193,26 @@ git submodule update --init --recursive
 
 _These plugins are suggested in the workspace file above and are already configured._
 
-![CMake Tools](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/windows/vscode-ext-1.png)
+![CMake Tools](Screenshots/Windows/vscode-ext-1.png)
 
-![Clangd](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/windows/vscode-ext-2.png)
+![Clangd](Screenshots/Windows/vscode-ext-2.png)
 
-![Clang Format](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/windows/vscode-ext-3.png)
+![Clang Format](Screenshots/Windows/vscode-ext-3.png)
 
 ### Building
-1. Open VS Code, `File > Open workspace from file > shadps4.code-workspace`
+1. Open VS Code, `File > Open workspace from file > elisa-core-ps4-port.code-workspace`
 2. Go to the CMake Tools extension on left side bar
 3. Change Clang x64 Debug to Clang x64 Release if you want a regular, non-debug build.
 4. Click build.
 
-Your shadps4.exe will be in `shadps4\shared\Build\x64-Clang-Release\`
+Your transitional `shadps4.exe` build will be in `elisa-core-ps4-port\shared\Build\x64-Clang-Release\`
 
 ## Option 3: MSYS2/MinGW
 
 > [!IMPORTANT]
-> Building with MSYS2 is broken as of right now, the only way to build on Windows is to use [Option 1: Visual Studio 2022](https://github.com/shadps4-emu/shadPS4/blob/main/documents/building-windows.md#option-1-visual-studio-2022) or [Option 2: VSCode with Visual Studio Build Tools](#option-2-vscode-with-visual-studio-build-tools).
+> Building with MSYS2 is broken as of right now, the only way to build on Windows
+> is to use [Option 1: Visual Studio 2022](#option-1-visual-studio-2022) or
+> [Option 2: VSCode with Visual Studio Build Tools](#option-2-vscode-with-visual-studio-build-tools).
 
 ### (Prerequisite) Download [**MSYS2**](https://www.msys2.org/)
 
@@ -218,22 +225,22 @@ Normal x86-based computers, follow:
 1. Open "MSYS2 MINGW64" from your new applications
 2. Run `pacman -Syu`, let it complete;
 3. Run `pacman -S --needed git mingw-w64-x86_64-binutils mingw-w64-x86_64-clang mingw-w64-x86_64-cmake mingw-w64-x86_64-rapidjson mingw-w64-x86_64-ninja mingw-w64-x86_64-ffmpeg`
-4. Run `git clone --depth 1 --recursive https://github.com/shadps4-emu/shadPS4`
-5. Run `cd shadPS4`
+4. Run `git clone --depth 1 --recursive <this-repository-url>`
+5. Run `cd <repository-folder>`
 6. Run `cmake -S . -B build -DCMAKE_C_COMPILER="clang.exe" -DCMAKE_CXX_COMPILER="clang++.exe" -DCMAKE_CXX_FLAGS="-O2 -march=native"`
 7. Run `cmake --build build`
-8. To run the finished product, run `./build/shadPS4.exe`
+8. To run the built transitional executable, run `./build/shadPS4.exe`
 
 ARM64-based computers, follow:
 
 1. Open "MSYS2 CLANGARM64" from your new applications
 2. Run `pacman -Syu`, let it complete;
 3. Run `pacman -S --needed git mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-rapidjson mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-ninja mingw-w64-clang-aarch64-ffmpeg`
-4. Run `git clone --depth 1 --recursive https://github.com/shadps4-emu/shadPS4`
-5. Run `cd shadPS4`
+4. Run `git clone --depth 1 --recursive <this-repository-url>`
+5. Run `cd <repository-folder>`
 6. Run `cmake -S . -B build -DCMAKE_C_COMPILER="clang.exe" -DCMAKE_CXX_COMPILER="clang++.exe" -DCMAKE_CXX_FLAGS="-O2 -march=native"`
 7. Run `cmake --build build`
-8. To run the finished product, run `./build/shadPS4.exe`
+8. To run the built transitional executable, run `./build/shadPS4.exe`
 
 ## Note on MSYS2 builds
 

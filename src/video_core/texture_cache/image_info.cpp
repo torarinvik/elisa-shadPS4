@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/alignment.h"
 #include "common/assert.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/videoout/buffer.h"
@@ -64,7 +65,9 @@ ImageInfo::ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group,
     type = AmdGpu::ImageType::Color2D;
     size.width = attrib.width;
     size.height = attrib.height;
-    pitch = attrib.tiling_mode == TilingMode::Linear ? size.width : (size.width + 127) & (~127);
+    const u32 registered_pitch = attrib.pitch_in_pixel != 0 ? attrib.pitch_in_pixel : size.width;
+    pitch = attrib.tiling_mode == TilingMode::Linear ? registered_pitch
+                                                     : Common::AlignUp(registered_pitch, 128u);
     num_bits = attrib.pixel_format != VideoOutFormat::A16R16G16B16Float ? 32 : 64;
     ASSERT(num_bits == 32);
 

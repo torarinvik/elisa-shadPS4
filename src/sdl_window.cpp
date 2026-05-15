@@ -431,10 +431,12 @@ void WindowSDL::OnKeyboardMouseInput(const SDL_Event* event) {
     if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) {
         if (event->key.scancode == SDL_SCANCODE_F10) {
             Common::Trace::SetAggressiveLoggingEnabled(true);
-            LOG_INFO(Input, "TRACE_CONTROL aggressive_logging enabled");
+            Common::Trace::SetBlackScreenWatchdogArmed(true);
+            LOG_INFO(Input, "TRACE_CONTROL aggressive_logging enabled; black_watchdog armed");
         } else if (event->key.scancode == SDL_SCANCODE_F9) {
             Common::Trace::SetAggressiveLoggingEnabled(false);
-            LOG_INFO(Input, "TRACE_CONTROL aggressive_logging disabled");
+            Common::Trace::SetBlackScreenWatchdogArmed(false);
+            LOG_INFO(Input, "TRACE_CONTROL aggressive_logging disabled; black_watchdog disarmed");
         }
     }
 

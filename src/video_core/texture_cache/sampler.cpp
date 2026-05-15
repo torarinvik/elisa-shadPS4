@@ -2,11 +2,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "common/assert.h"
+#include "common/trace_control.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/texture_cache/sampler.h"
 
 namespace VideoCore {
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
                  const AmdGpu::BorderColorBuffer border_color_base) {
@@ -24,6 +31,11 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
     if (border_color == vk::BorderColor::eFloatCustomEXT &&
         !instance.IsCustomBorderColorSupported()) {
         LOG_WARNING(Render_Vulkan, "Custom border color is not supported, falling back to black");
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: custom sampler border color unsupported; would "
+                   "fallback to opaque black border_color_type={} border_ptr={:#x}",
+                   static_cast<u32>(static_cast<AmdGpu::BorderColor>(sampler.border_color_type)),
+                   sampler.border_color_ptr.Value());
         border_color = vk::BorderColor::eFloatOpaqueBlack;
     }
 

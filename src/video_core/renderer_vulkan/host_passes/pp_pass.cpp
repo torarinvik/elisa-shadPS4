@@ -4,6 +4,7 @@
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
 
 #include "common/assert.h"
+#include "common/trace_control.h"
 #include "core/emulator_settings.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
 #include "video_core/host_shaders/post_process_frag.h"
@@ -14,6 +15,11 @@
 #include <boost/container/static_vector.hpp>
 
 namespace Vulkan::HostPasses {
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 void PostProcessingPass::Create(vk::Device device, const vk::Format surface_format) {
     static const std::array pp_shaders{
@@ -188,6 +194,18 @@ void PostProcessingPass::Create(vk::Device device, const vk::Format surface_form
 
 void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
                                 vk::Extent2D input_size, Frame& frame, Settings settings) {
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                   (input && input_size.width > 0 && input_size.height > 0 && frame.image &&
+                    frame.image_view && frame.imgui_texture && frame.width > 0 &&
+                    frame.height > 0),
+               "Strict render validation: invalid post-processing input view={:#x} "
+               "input_size={}x{} frame_image={:#x} frame_view={:#x} frame_texture={} "
+               "frame_size={}x{} hdr={}",
+               reinterpret_cast<uintptr_t>(static_cast<VkImageView>(input)), input_size.width,
+               input_size.height, reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame.image)),
+               reinterpret_cast<uintptr_t>(static_cast<VkImageView>(frame.image_view)),
+               reinterpret_cast<uintptr_t>(frame.imgui_texture), frame.width, frame.height,
+               settings.hdr);
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{
             .pLabelName = "Host/Post processing",

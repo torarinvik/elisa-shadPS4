@@ -25,6 +25,8 @@ mkdir -p "$EMU_SCREENSHOT_DIR" "$DESKTOP_SCREENSHOT_DIR"
 : "${SHADPS4_DUMP_SHADER_HASH:=0xc455a5aa2c447041}"
 : "${SHADPS4_COMPOSITOR_NULL_LAYER:=0}"
 : "${SHADPS4_COMPOSITOR_ZERO_LAYER:=0}"
+: "${SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG:=0}"
+: "${SHADPS4_BLACK_WATCHDOG_ARMED:=0}"
 
 export SHADPS4_TRACE_INPUT=1
 export SHADPS4_TRACE_RENDER
@@ -35,6 +37,8 @@ export SHADPS4_VIDEOOUT_UNORM
 export SHADPS4_DUMP_SHADER_HASH
 export SHADPS4_COMPOSITOR_NULL_LAYER
 export SHADPS4_COMPOSITOR_ZERO_LAYER
+export SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG
+export SHADPS4_BLACK_WATCHDOG_ARMED
 
 if [[ "$SHADPS4_TRACE_SCREENSHOTS" != "0" ]]; then
     export SHADPS4_TRACE_SCREENSHOT_INTERVAL_MS
@@ -60,6 +64,9 @@ fi
     echo "dump_shader_hash=$SHADPS4_DUMP_SHADER_HASH"
     echo "compositor_null_layer=$SHADPS4_COMPOSITOR_NULL_LAYER"
     echo "compositor_zero_layer=$SHADPS4_COMPOSITOR_ZERO_LAYER"
+    echo "strict_black_screen_watchdog=$SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG"
+    echo "black_watchdog_armed=$SHADPS4_BLACK_WATCHDOG_ARMED"
+    echo "sigkill_exit_key=F8"
     echo "aggressive_logging_enable_key=F10"
     echo "aggressive_logging_disable_key=F9"
     echo "video_out_trace_every=$SHADPS4_TRACE_VIDEO_OUT_EVERY"

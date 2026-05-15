@@ -1,11 +1,22 @@
 <!--
 SPDX-FileCopyrightText: 2024 shadPS4 Emulator Project
+SPDX-FileCopyrightText: 2026 Elisa-core port maintainers
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
-## Build shadPS4 for Linux
+## Build the Elisa-core PS4 port for Linux
 
-First and foremost, Clang 18 is the **recommended compiler** as it is used for official builds and CI. If you build with GCC, you might encounter issues — please report any you find. Additionally, if you choose to use GCC, please build shadPS4 with Clang at least once before creating an `[APP BUG]` issue or submitting a pull request.
+> [!IMPORTANT]
+> These instructions are inherited from the upstream shadPS4 layout and are being
+> adapted for this independent Elisa-core port. Executable names, paths, and
+> screenshots may still use `shadPS4` while the port is in progress. Builds from
+> this repository are not official shadPS4 builds.
+
+First and foremost, Clang 18 is the **recommended compiler** because this
+codebase inherits the upstream shadPS4 build configuration. If you build with
+GCC, you might encounter issues. Additionally, if you choose to use GCC, please
+build this port with Clang at least once before creating an issue or submitting a
+pull request.
 
 ## Preparatory steps
 
@@ -37,7 +48,9 @@ sudo pacman -S base-devel clang git cmake sndio jack2 openal \
     sdl2 vulkan-validation-layers libpng
 ```
 
-**Note**: The `shadps4-git` AUR package is not maintained by any of the developers, and it uses the default compiler, which is often set to GCC. Use at your own discretion.
+**Note**: The upstream `shadps4-git` AUR package is unrelated to this Elisa-core
+port, is not maintained here, and uses the default compiler, which is often set
+to GCC. Use at your own discretion.
 
 #### OpenSUSE
 
@@ -89,8 +102,8 @@ This option is **highly recommended** for distributions with immutable/atomic fi
 The project uses submodules to manage dependencies, and they need to be initialized before you can build the project. To achieve this, make sure you've cloned the repository with the --recursive flag
 
 ```bash
-git clone --recursive https://github.com/shadps4-emu/shadPS4.git
-cd shadPS4
+git clone --recursive <this-repository-url>
+cd <repository-folder>
 ```
 
 ## Building
@@ -99,7 +112,7 @@ There are 3 options you can choose from. Option 1 is **highly recommended**.
 
 #### Option 1: Terminal-only
 
-1. Generate the build directory in the shadPS4 directory.
+1. Generate the build directory in the repository directory.
 
 ```bash
 cmake -S . -B build/ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
@@ -126,7 +139,9 @@ You can also specify the Game ID as an argument for which game to boot, as long 
 
 `cmake-gui` should be installed by default alongside `cmake`, if not search for the package in your package manager and install it.
 
-Open `cmake-gui` and specify the source code and build directories. If you cloned the source code to your Home directory, it would be `/home/user/shadPS4` and `/home/user/shadPS4/build`.
+Open `cmake-gui` and specify the source code and build directories. If you
+cloned the source code to your Home directory, it would be
+`/home/user/<repository-folder>` and `/home/user/<repository-folder>/build`.
 
 Click on Configure, select "Unix Makefiles", select "Specify native compilers", click Next and choose `clang` and `clang++` as the C and CXX compilers. Usually they are located in `/bin/clang` and `/bin/clang++`. Click on Finish and let it configure the project.
 
@@ -140,22 +155,26 @@ This option is pretty convoluted and should only be used if you have VSCode as y
 
 Once set up, go to Extensions and install "CMake Tools":
 
-![image](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/Linux/3.png)
+![image](Screenshots/Linux/3.png)
 
 You can also install other CMake and Clang related extensions if you'd like, but this one is what enables you to configure and build CMake projects directly within VSCode.
 
 Go to Settings, filter by `@ext:ms-vscode.cmake-tools configure` and disable this option:
 
-![image](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/Linux/1.png)
+![image](Screenshots/Linux/1.png)
 
 On the CMake tab, change the options as you wish, but make sure that it looks similar to or exactly like this:
 
-![image](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/Linux/4.png)
+![image](Screenshots/Linux/4.png)
 
 When hovering over Project Status > Configure, there should be an icon titled "Configure". Click on it and let it configure the project, then do the same for Project Status > Build.
 
-If you want to debug it, change the build type under Project Status > Configure to Debug (it should be the default) and compile it, then click on the icon in Project Status > Debug. If you simply want to launch the shadPS4 executable from within VSCode, click on the icon in Project Status > Launch.
+If you want to debug it, change the build type under Project Status > Configure
+to Debug (it should be the default) and compile it, then click on the icon in
+Project Status > Debug. If you simply want to launch the built executable from
+within VSCode, click on the icon in Project Status > Launch.
 
-Don't forget to change the launch target for both options to the shadPS4 executable inside shadPS4/build:
+Don't forget to change the launch target for both options to the built
+executable inside the repository's `build` directory:
 
-![image](https://raw.githubusercontent.com/shadps4-emu/shadPS4/refs/heads/main/documents/Screenshots/Linux/5.png)
+![image](Screenshots/Linux/5.png)

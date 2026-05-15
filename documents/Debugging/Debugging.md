@@ -1,11 +1,18 @@
 <!--
 SPDX-FileCopyrightText: 2024 shadPS4 Emulator Project
+SPDX-FileCopyrightText: 2026 Elisa-core port maintainers
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
- # Debugging and reporting issues about shadPS4 and games
+ # Debugging and reporting issues for the Elisa-core PS4 port
 
-This document covers information about debugging, troubleshooting and reporting developer-side issues related to shadPS4 and games.
+> [!IMPORTANT]
+> This document is inherited from upstream shadPS4 and is being adapted for this
+> independent Elisa-core port. Please do not report issues from this repository
+> to upstream shadPS4 unless they also reproduce on an unmodified upstream
+> checkout.
+
+This document covers information about debugging, troubleshooting and reporting developer-side issues related to this port and games.
 
 ## Setup
 
@@ -21,8 +28,8 @@ RenderDoc doesn't work with Wayland, so to use it you have to run the emulator w
 <details>
 <summary>Windows and Visual Studio</summary>
 
-Make sure you have the project set up for building on Windows with Visual Studio and CMake: [Build shadPS4 for Windows
-](https://github.com/shadps4-emu/shadPS4/blob/main/documents/building-windows.md)
+Make sure you have the project set up for building on Windows with Visual Studio
+and CMake: [Build the Elisa-core PS4 port for Windows](../building-windows.md)
 
 1. Open the project folder in Visual Studio **as a folder**. _Do not run `cmake ..` or other commands that set up the project._
    
@@ -32,10 +39,14 @@ Make sure you have the project set up for building on Windows with Visual Studio
 3. Double-click on **CMake Targets View**.\
   ![image](https://github.com/user-attachments/assets/5ce7cf90-cd61-4cfa-bef5-645909827290)
 
-4. Under **shadPS4 Project**, right-click on the **shadps4 (executable)** solution and click **Set as Startup Item**. This will let you start and debug shadPS4 using the VS debug buttons, as well as the default F5 shortcut.\
+4. Under the inherited **shadPS4 Project** target group, right-click on the
+   **shadps4 (executable)** solution and click **Set as Startup Item**. This
+   will let you start and debug the port using the VS debug buttons, as well as
+   the default F5 shortcut.\
    ![image](https://github.com/user-attachments/assets/34c7c047-28a3-499f-be8f-df781134d104)
 
-5. Right-click the **shadps4 (executable)** solution once more and click **Add debug configuration**.
+5. Right-click the transitional **shadps4 (executable)** solution once more and
+   click **Add debug configuration**.
 
 6. Add an `"args: []"` section into the first `configurations` entry.\
    List your game path as an argument, as if you were launching the non-GUI emulator from the command line.
@@ -161,10 +172,14 @@ Accurately identifying games will help other developers that own that game recog
   - _GTA 5_
   - _Watch Dogs_
    
-- If your issue is small or you aren't sure whether you have properly identified something, [join the Discord server](https://discord.gg/MyZRaBngxA) and use the #development channel
+- If your issue is small or you aren't sure whether you have properly identified
+  something, ask in this repository's issue tracker or development channel.
   to concisely explain the issue, as well as any findings you currently have.
 
-- It is recommended that you check the [game compatibility issue tracker](https://github.com/shadps4-compatibility/shadps4-game-compatibility/issues) and post very short summaries of progress changes there,
+- If you are comparing behavior with upstream shadPS4, check the
+  [upstream game compatibility issue tracker](https://github.com/shadps4-compatibility/shadps4-game-compatibility/issues)
+  separately and only post results there when they come from unmodified upstream
+  shadPS4.
   (such as the game now booting into the menu or getting in-game) for organizational and status update purposes.
   
 - ⚠ **Do not post theoretical, unproven game-specific issues in the emulator issue tracker that you cannot verify and locate in the emulator source code as being a bug.**\

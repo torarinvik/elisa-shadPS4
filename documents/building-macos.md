@@ -1,11 +1,18 @@
 <!--
 SPDX-FileCopyrightText: 2024 shadPS4 Emulator Project
+SPDX-FileCopyrightText: 2026 Elisa-core port maintainers
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
-## Build shadPS4 for macOS
+## Build the Elisa-core PS4 port for macOS
 
-### Install the necessary tools to build shadPS4:
+> [!IMPORTANT]
+> These instructions are inherited from the upstream shadPS4 layout and are being
+> adapted for this independent Elisa-core port. Executable names and paths may
+> still use `shadPS4` while the port is in progress. Builds from this repository
+> are not official shadPS4 builds.
+
+### Install the necessary tools to build this port:
 
 First, make sure you have **Xcode 16.0 or newer** installed.
 
@@ -28,11 +35,11 @@ brew install clang-format cmake
 
 Clone the repository recursively:
 ```
-git clone --recursive https://github.com/shadps4-emu/shadPS4.git
-cd shadPS4
+git clone --recursive <this-repository-url>
+cd <repository-folder>
 ```
 
-Generate the build directory in the shadPS4 directory:
+Generate the build directory in the repository directory:
 ```
 cmake -S . -B build/ -DCMAKE_OSX_ARCHITECTURES=x86_64
 ```

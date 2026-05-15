@@ -3,6 +3,7 @@
 
 #include <ranges>
 #include "common/assert.h"
+#include "common/trace_control.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -14,6 +15,11 @@
 namespace VideoCore {
 
 using namespace Vulkan;
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 static vk::ImageUsageFlags ImageUsageFlags(const Vulkan::Instance* instance,
                                            const ImageInfo& info) {
@@ -158,6 +164,14 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
         LOG_ERROR(Render_Vulkan, "image format {} type {} is not supported (flags {}, usage {})",
                   vk::to_string(supported_format), vk::to_string(format_info.type),
                   vk::to_string(format_info.flags), vk::to_string(format_info.usage));
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: unsupported image format {} type {} flags {} usage {} "
+                   "guest_addr={:#x} guest_size={} size={}x{}x{} layers={} levels={} samples={}",
+                   vk::to_string(supported_format), vk::to_string(format_info.type),
+                   vk::to_string(format_info.flags), vk::to_string(format_info.usage),
+                   info.guest_address, info.guest_size, info.size.width, info.size.height,
+                   info.size.depth, info.resources.layers, info.resources.levels,
+                   info.num_samples);
     }
     supported_samples = image_format_properties.result == vk::Result::eSuccess
                             ? image_format_properties.value.imageFormatProperties.sampleCounts
@@ -194,9 +208,40 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
 
 Image::~Image() = default;
 
-ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_samples) {
+ImageView& Image::FindView(const ImageViewInfo& requested_view_info, bool ensure_guest_samples) {
     if (ensure_guest_samples && backing->num_samples > 1 != info.num_samples > 1) {
         SetBackingSamples(info.num_samples);
+    }
+    ImageViewInfo view_info = requested_view_info;
+    const auto requested_end_level = view_info.range.base.level + view_info.range.extent.levels;
+    const auto requested_end_layer = view_info.range.base.layer + view_info.range.extent.layers;
+    if (requested_end_level > info.resources.levels ||
+        requested_end_layer > info.resources.layers) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_IMAGE view_subresource_oob addr={:#x} size={:#x} format={} "
+                    "image_levels={} image_layers={} base_level={} base_layer={} "
+                    "req_levels={} req_layers={} end_level={} end_layer={}",
+                    info.guest_address, info.guest_size, vk::to_string(info.pixel_format),
+                    info.resources.levels, info.resources.layers, view_info.range.base.level,
+                    view_info.range.base.layer, view_info.range.extent.levels,
+                    view_info.range.extent.layers, requested_end_level, requested_end_layer);
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: image view requests out-of-bounds subresources "
+                   "addr={:#x} size={:#x} format={} image_levels={} image_layers={} "
+                   "base_level={} base_layer={} req_levels={} req_layers={} end_level={} "
+                   "end_layer={}",
+                   info.guest_address, info.guest_size, vk::to_string(info.pixel_format),
+                   info.resources.levels, info.resources.layers, view_info.range.base.level,
+                   view_info.range.base.layer, view_info.range.extent.levels,
+                   view_info.range.extent.layers, requested_end_level, requested_end_layer);
+        view_info.range.base.level = std::min(view_info.range.base.level, info.resources.levels - 1);
+        view_info.range.base.layer = std::min(view_info.range.base.layer, info.resources.layers - 1);
+        view_info.range.extent.levels =
+            std::min(view_info.range.extent.levels,
+                     info.resources.levels - view_info.range.base.level);
+        view_info.range.extent.layers =
+            std::min(view_info.range.extent.layers,
+                     info.resources.layers - view_info.range.base.layer);
     }
     const auto& view_infos = backing->image_view_infos;
     const auto it = std::ranges::find(view_infos, view_info);
@@ -434,20 +479,34 @@ void Image::Download(std::span<const vk::BufferImageCopy> download_copies, vk::B
 }
 
 static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const ImageInfo& dst_info,
-                                              const u32 depth) {
+                                              const u32 depth, const u32 src_base_layer = 0,
+                                              const u32 dst_base_layer = 0) {
     const auto vk_src_type = ConvertImageType(src_info.type);
     const auto vk_dst_type = ConvertImageType(dst_info.type);
 
-    u32 src_layers = src_info.resources.layers;
-    u32 dst_layers = dst_info.resources.layers;
+    const auto remaining_layers = [](u32 layers, u32 base_layer) {
+        return base_layer < layers ? layers - base_layer : 0;
+    };
+    u32 src_layers = remaining_layers(src_info.resources.layers, src_base_layer);
+    u32 dst_layers = remaining_layers(dst_info.resources.layers, dst_base_layer);
 
     // 3D images can only use 1 layer.
     if (vk_src_type == vk::ImageType::e3D && src_layers != 1) {
         LOG_WARNING(Render_Vulkan, "Coercing copy 3D source layers {} to 1.", src_layers);
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: coercing 3D source copy layers from {} to 1 "
+                   "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
+                   src_layers, src_info.guest_address, src_info.guest_size, dst_info.guest_address,
+                   dst_info.guest_size);
         src_layers = 1;
     }
     if (vk_dst_type == vk::ImageType::e3D && dst_layers != 1) {
         LOG_WARNING(Render_Vulkan, "Coercing copy 3D destination layers {} to 1.", dst_layers);
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: coercing 3D destination copy layers from {} to 1 "
+                   "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
+                   dst_layers, src_info.guest_address, src_info.guest_size,
+                   dst_info.guest_address, dst_info.guest_size);
         dst_layers = 1;
     }
 
@@ -457,6 +516,11 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
             LOG_WARNING(Render_Vulkan,
                         "Coercing copy source layers {} and destination layers {} to minimum.",
                         src_layers, dst_layers);
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: coercing copy layers from src={} dst={} "
+                       "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
+                       src_layers, dst_layers, src_info.guest_address, src_info.guest_size,
+                       dst_info.guest_address, dst_info.guest_size);
             src_layers = dst_layers = std::min(src_layers, dst_layers);
         }
     } else {
@@ -466,14 +530,24 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
             LOG_WARNING(Render_Vulkan,
                         "Coercing copy 2D source layers {} to 3D destination depth {}", src_layers,
                         depth);
-            src_layers = depth;
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: coercing 2D source copy layers {} to 3D depth {} "
+                       "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
+                       src_layers, depth, src_info.guest_address, src_info.guest_size,
+                       dst_info.guest_address, dst_info.guest_size);
+            src_layers = std::min(src_layers, depth);
         }
         if (vk_src_type == vk::ImageType::e3D && vk_dst_type == vk::ImageType::e2D &&
             dst_layers != depth) {
             LOG_WARNING(Render_Vulkan,
                         "Coercing copy 2D destination layers {} to 3D source depth {}", dst_layers,
                         depth);
-            dst_layers = depth;
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: coercing 2D destination copy layers {} to 3D "
+                       "depth {} src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
+                       dst_layers, depth, src_info.guest_address, src_info.guest_size,
+                       dst_info.guest_address, dst_info.guest_size);
+            dst_layers = std::min(dst_layers, depth);
         }
     }
 
@@ -525,6 +599,9 @@ void Image::CopyImage(Image& src_image) {
         const u32 mip_d = std::max(base_depth >> mip, 1u);
 
         auto [src_layers, dst_layers] = SanitizeCopyLayers(src_info, info, mip_d);
+        if (src_layers == 0 || dst_layers == 0) {
+            continue;
+        }
 
         vk::ImageCopy region{};
 
@@ -596,10 +673,11 @@ void Image::CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset)
         const auto mip_h = std::max(src_info.size.height >> mip, 1u);
         const auto mip_d = std::max(src_info.size.depth >> mip, 1u);
 
+        const auto& mip_info = src_info.mips_layout[mip];
         buffer_copies.emplace_back(vk::BufferImageCopy{
-            .bufferOffset = offset,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
+            .bufferOffset = offset + mip_info.offset,
+            .bufferRowLength = mip_info.pitch,
+            .bufferImageHeight = mip_info.height,
             .imageSubresource{
                 .aspectMask = src_image.aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
                 .mipLevel = mip,
@@ -668,6 +746,9 @@ void Image::CopyMip(Image& src_image, u32 mip, u32 slice) {
     const auto mip_h = std::max(info.size.height >> mip, 1u);
     const auto mip_d = std::max(info.size.depth >> mip, 1u);
     const auto [src_layers, dst_layers] = SanitizeCopyLayers(src_info, info, mip_d);
+    if (src_layers == 0 || dst_layers == 0) {
+        return;
+    }
 
     ASSERT(mip_w == src_info.size.width);
     ASSERT(mip_h == src_info.size.height);
@@ -711,7 +792,11 @@ void Image::Resolve(Image& src_image, const VideoCore::SubresourceRange& mrt0_ra
                       mrt0_range);
     Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, mrt1_range);
 
-    const auto [src_layers, dst_layers] = SanitizeCopyLayers(src_image.info, info, 1);
+    const auto [src_layers, dst_layers] =
+        SanitizeCopyLayers(src_image.info, info, 1, mrt0_range.base.layer, mrt1_range.base.layer);
+    if (src_layers == 0 || dst_layers == 0) {
+        return;
+    }
     if (src_image.backing->num_samples == 1) {
         const vk::ImageCopy region = {
             .srcSubresource{

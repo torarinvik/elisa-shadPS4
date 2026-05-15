@@ -1,11 +1,18 @@
 <!--
 SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
+SPDX-FileCopyrightText: 2026 Elisa-core port maintainers
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
-# Building shadPS4 with Docker and VSCode Support
+# Building the Elisa-core PS4 port with Docker and VSCode support
 
-This guide explains how to build **shadPS4** using Docker while keeping full compatibility with **VSCode** development.
+> [!IMPORTANT]
+> These instructions are inherited from the upstream shadPS4 layout and are being
+> adapted for this independent Elisa-core port. Executable names and paths may
+> still use `shadPS4` while the port is in progress. Builds from this repository
+> are not official shadPS4 builds.
+
+This guide explains how to build this port using Docker while keeping full compatibility with **VSCode** development.
 
 ---
 
@@ -38,14 +45,12 @@ docker compose up -d
 
 This will spin up a container with all the necessary build dependencies, including Clang, CMake, SDL2, Vulkan, and more.
 
-## Step 2: Clone shadPS4 Source
+## Step 2: Clone this repository
 
 ```bash
 mkdir emu
 cd emu
-git clone --recursive https://github.com/shadps4-emu/shadPS4.git .
-
-or your fork link.
+git clone --recursive <this-repository-url> .
 ```
 
 3. Initialize submodules:

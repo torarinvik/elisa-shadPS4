@@ -165,9 +165,11 @@ struct PageManager::Impl {
             // Read message from kernel.
             uffd_msg msg;
             const int readret = read(uffd, &msg, sizeof(msg));
-            ASSERT_MSG(readret != -1 || errno == EAGAIN, "Unexpected result of uffd read");
-            if (errno == EAGAIN) {
-                continue;
+            if (readret == -1) {
+                if (errno == EAGAIN) {
+                    continue;
+                }
+                UNREACHABLE_MSG("Unexpected result of uffd read: {}", Common::GetLastErrorMsg());
             }
             ASSERT_MSG(readret == sizeof(msg), "Unexpected short read, exiting");
             ASSERT(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP);

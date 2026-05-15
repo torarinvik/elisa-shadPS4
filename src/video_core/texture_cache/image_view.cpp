@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/logging/log.h"
+#include "common/assert.h"
+#include "common/trace_control.h"
 #include "shader_recompiler/resource.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -11,6 +13,11 @@
 #include <magic_enum/magic_enum.hpp>
 
 namespace VideoCore {
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 vk::ImageViewType ConvertImageViewType(AmdGpu::ImageType type) {
     switch (type) {
@@ -126,6 +133,14 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     if (!IsViewTypeCompatible(info.type, image.info.type)) {
         LOG_ERROR(Render_Vulkan, "image view type {} is incompatible with image type {}",
                   magic_enum::enum_name(info.type), magic_enum::enum_name(image.info.type));
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: image view type {} is incompatible with image type {} "
+                   "guest_addr={:#x} guest_size={} format={} view_base_layer={} view_layers={} "
+                   "image_layers={}",
+                   magic_enum::enum_name(info.type), magic_enum::enum_name(image.info.type),
+                   image.info.guest_address, image.info.guest_size,
+                   vk::to_string(image.info.pixel_format), info.range.base.layer,
+                   info.range.extent.layers, image.info.resources.layers);
     }
 
     auto [view_result, view] = instance.GetDevice().createImageViewUnique(image_view_ci);

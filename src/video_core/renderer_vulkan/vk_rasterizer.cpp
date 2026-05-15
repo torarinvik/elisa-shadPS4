@@ -30,6 +30,11 @@ static bool IsTraceRenderEnabled() {
     return Common::Trace::IsAggressiveLoggingEnabled();
 }
 
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
+
 static bool IsFmaskDecompressResolveEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_FMASK_DECOMPRESS_AS_RESOLVE");
@@ -161,8 +166,9 @@ bool Rasterizer::FilterDraw() {
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::FmaskDecompress) {
         const bool can_resolve =
             IsFmaskDecompressResolveEnabled() && regs.color_buffers[0] && regs.color_buffers[1];
-        const bool can_decompress_in_place = IsFmaskDecompressInPlaceEnabled() &&
-                                             regs.color_buffers[0] && !regs.color_buffers[1];
+        const bool can_decompress_in_place =
+            (IsFmaskDecompressInPlaceEnabled() || IsStrictRenderValidationEnabled()) &&
+            regs.color_buffers[0] && !regs.color_buffers[1];
         if (IsTraceRenderEnabled()) {
             static std::atomic<u64> fmask_decompress_count{};
             const u64 count = fmask_decompress_count.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -829,7 +835,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         if (texture_cache.IsMeta(tsharp.Address())) {
             const auto* meta = texture_cache.FindMetaData(tsharp.Address());
             const bool null_fmask_read =
-                IsNullFmaskTextureReadEnabled() && meta &&
+                (IsNullFmaskTextureReadEnabled() || IsStrictRenderValidationEnabled()) && meta &&
                 meta->type == VideoCore::TextureCache::MetaDataInfo::Type::FMask &&
                 !image_desc.is_written;
             const bool null_meta_read = !null_fmask_read && IsNullMetaTextureReadEnabled() &&
@@ -885,6 +891,16 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             } else {
                 LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
             }
+            ASSERT_MSG(!IsStrictRenderValidationEnabled() || null_fmask_read || null_meta_read,
+                       "Strict render validation: shader samples metadata texture addr={:#x} "
+                       "kind={} action={} stage={} pgm={:#x} data_fmt={} num_fmt={} type={} "
+                       "width={} height={} depth={} pitch={} mips={} is_written={}",
+                       tsharp.Address(), meta ? MetaTypeName(meta->type) : "unknown", action,
+                       stage.stage, stage.pgm_hash, static_cast<u32>(tsharp.GetDataFmt()),
+                       static_cast<u32>(tsharp.GetNumberFmt()), static_cast<u32>(tsharp.GetType()),
+                       static_cast<u32>(tsharp.width + 1), static_cast<u32>(tsharp.height + 1),
+                       static_cast<u32>(tsharp.depth + 1), tsharp.Pitch(), tsharp.NumLevels(),
+                       image_desc.is_written);
             if (null_fmask_read) {
                 VideoCore::TextureCache::ImageDesc desc{tsharp, image_desc};
                 image_bindings.emplace_back(texture_cache.GetNullImage(desc.info.pixel_format), desc);
@@ -899,6 +915,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         }
 
         if (tsharp.GetDataFmt() == AmdGpu::DataFormat::FormatInvalid) {
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: invalid texture descriptor format stage={} "
+                       "pgm={:#x} addr={:#x} num_fmt={} type={} width={} height={} depth={} "
+                       "pitch={} mips={} is_written={}",
+                       stage.stage, stage.pgm_hash, tsharp.Address(),
+                       static_cast<u32>(tsharp.GetNumberFmt()), static_cast<u32>(tsharp.GetType()),
+                       static_cast<u32>(tsharp.width + 1), static_cast<u32>(tsharp.height + 1),
+                       static_cast<u32>(tsharp.depth + 1), tsharp.Pitch(), tsharp.NumLevels(),
+                       image_desc.is_written);
             image_bindings.emplace_back(std::piecewise_construct, std::tuple{}, std::tuple{});
             image_descriptor_array_sizes.push_back(1);
             continue;
@@ -985,6 +1010,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             image_id = texture_cache.GetNullImage(desc.info.pixel_format);
         }
         if (!image_id) {
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: null image binding stage={} pgm={:#x} "
+                       "binding_index={} descriptor={} desc_guest_addr={:#x} desc_guest_size={} "
+                       "desc_size={}x{}x{} desc_pitch={} desc_format={} desc_samples={}",
+                       stage.stage, stage.pgm_hash, trace_image_binding_idx,
+                       BindingTypeName(desc.type), desc.info.guest_address, desc.info.guest_size,
+                       desc.info.size.width, desc.info.size.height, desc.info.size.depth,
+                       desc.info.pitch, vk::to_string(desc.info.pixel_format),
+                       desc.info.num_samples);
             if (trace_image_bindings && (trace_stage_has_videoout_storage || is_storage)) {
                 static std::atomic<u64> null_image_binding_count{};
                 const u64 count =
@@ -1062,11 +1096,19 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             image_infos.emplace_back(VK_NULL_HANDLE, *image_view.image_view,
                                      image.backing->state.layout);
 
+            const bool is_videoout_storage = is_storage && IsLikelyVideoOutStorageImage(image);
+            if (is_videoout_storage) {
+                Common::Trace::RecordVideoOutWrite(
+                    "BindStorageVideoOut", image.info.guest_address, image.info.guest_size,
+                    stage.pgm_hash,
+                    (static_cast<u64>(static_cast<u32>(stage.stage)) << 32) |
+                        trace_image_binding_idx);
+            }
+
             if (trace_image_bindings && (trace_stage_has_videoout_storage || is_storage)) {
                 static std::atomic<u64> image_binding_count{};
                 const u64 count =
                     image_binding_count.fetch_add(1, std::memory_order_relaxed) + 1;
-                const bool is_videoout_storage = is_storage && IsLikelyVideoOutStorageImage(image);
                 const bool should_log = trace_stage_has_videoout_storage ||
                                         is_videoout_storage || count <= 128 ||
                                         (count % 300) == 0;
@@ -1113,6 +1155,19 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     u32 image_info_idx = first_image_idx;
     u32 image_binding_idx = 0;
     for (u32 array_size : image_descriptor_array_sizes) {
+        ASSERT_MSG(!IsStrictRenderValidationEnabled() || image_binding_idx < image_bindings.size(),
+                   "Strict render validation: image descriptor binding index overflow "
+                   "binding_idx={} bindings={} image_info_idx={} image_infos={} array_size={} "
+                   "stage={} pgm={:#x}",
+                   image_binding_idx, image_bindings.size(), image_info_idx, image_infos.size(),
+                   array_size, stage.stage, stage.pgm_hash);
+        ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                       image_info_idx + array_size <= image_infos.size(),
+                   "Strict render validation: image descriptor info range overflow "
+                   "binding_idx={} image_info_idx={} array_size={} image_infos={} stage={} "
+                   "pgm={:#x}",
+                   image_binding_idx, image_info_idx, array_size, image_infos.size(), stage.stage,
+                   stage.pgm_hash);
         const auto& [_, desc] = image_bindings[image_binding_idx];
         const bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
         auto& set_write = set_writes[set_write_index++];
@@ -1132,6 +1187,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     for (const auto& sampler : stage.samplers) {
         auto ssharp = sampler.GetSharp(stage);
         if (sampler.disable_aniso) {
+            ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                           sampler.associated_image < stage.images.size(),
+                       "Strict render validation: sampler associated image index out of range "
+                       "associated={} images={} stage={} pgm={:#x}",
+                       sampler.associated_image, stage.images.size(), stage.stage, stage.pgm_hash);
             const auto& tsharp = stage.images[sampler.associated_image].GetSharp(stage);
             if (tsharp.base_level == 0 && tsharp.last_level == 0) {
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);

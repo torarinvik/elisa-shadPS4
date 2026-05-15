@@ -10,6 +10,7 @@
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/scope_exit.h"
+#include "common/trace_control.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -24,6 +25,11 @@ namespace VideoCore {
 
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 static bool IsTraceMetaDataRegisterEnabled() {
     static const bool enabled = [] {
@@ -267,13 +273,9 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
 }
 
 void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
+    Common::Trace::RecordVideoOutWrite("InvalidateMemoryFromGPU", address, max_size);
     std::scoped_lock lock{mutex};
-    ForEachImageInRegion(address, max_size, [&](ImageId image_id, Image& image) {
-        // Only consider images that match base address.
-        // TODO: Maybe also consider subresources
-        if (image.info.guest_address != address) {
-            return;
-        }
+    ForEachImageInRegion(address, max_size, [&](ImageId, Image& image) {
         // Ensure image is reuploaded when accessed again.
         image.flags |= ImageFlagBits::GpuDirty;
     });
@@ -370,6 +372,15 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
                 new_image.GetImage());
         } else {
             LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: unimplemented depth overlap copy requested "
+                       "old_addr={:#x} old_size={} old_format={} old_samples={} "
+                       "new_addr={:#x} new_size={} new_format={} new_samples={} binding={}",
+                       cache_image.info.guest_address, cache_image.info.guest_size,
+                       vk::to_string(cache_image.info.pixel_format), cache_image.info.num_samples,
+                       new_info.guest_address, new_info.guest_size,
+                       vk::to_string(new_info.pixel_format), new_info.num_samples,
+                       BindingTypeName(binding));
         }
 
         // Free the cache image.
@@ -414,6 +425,16 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         if (image_info.guest_size == cache_image.info.guest_size &&
             (image_info.type == AmdGpu::ImageType::Color3D ||
              cache_image.info.type == AmdGpu::ImageType::Color3D)) {
+            return {ExpandImage(image_info, cache_image_id), -1, -1};
+        }
+
+        // Same base address, but the later descriptor exposes more mip/layer resources than the
+        // render target image originally allocated. Expand now so existing contents are preserved
+        // instead of falling through to the generic too-small-resource recovery path below.
+        if (image_info.type == cache_image.info.type &&
+            image_info.resources > cache_image.info.resources &&
+            image_info.tile_mode == cache_image.info.tile_mode &&
+            IsVulkanFormatCompatible(cache_image.info.pixel_format, image_info.pixel_format)) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -619,6 +640,12 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
 
     if (info.guest_address == 0) [[unlikely]] {
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: image descriptor has null guest address type={} "
+                   "format={} size={}x{}x{} pitch={} layers={} levels={} samples={}",
+                   BindingTypeName(desc.type), vk::to_string(info.pixel_format), info.size.width,
+                   info.size.height, info.size.depth, info.pitch, info.resources.layers,
+                   info.resources.levels, info.num_samples);
         return GetNullImage(info.pixel_format);
     }
 
@@ -677,6 +704,16 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             image_id = {};
         } else if (image_resolved.info.resources < info.resources) {
             // The image was clearly picked up wrong.
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: image overlap resolved to image with too few "
+                       "resources requested_addr={:#x} requested_size={} requested_format={} "
+                       "requested_levels={} requested_layers={} resolved_id={} resolved_addr={:#x} "
+                       "resolved_size={} resolved_format={} resolved_levels={} resolved_layers={}",
+                       info.guest_address, info.guest_size, vk::to_string(info.pixel_format),
+                       info.resources.levels, info.resources.layers, image_id.index,
+                       image_resolved.info.guest_address, image_resolved.info.guest_size,
+                       vk::to_string(image_resolved.info.pixel_format),
+                       image_resolved.info.resources.levels, image_resolved.info.resources.layers);
             FreeImage(image_id);
             image_id = {};
             LOG_WARNING(Render_Vulkan, "Image overlap resolve failed");
@@ -706,9 +743,6 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure_valid) {
     ImageIds image_ids;
     ForEachImageInRegion(address, size, [&](ImageId image_id, Image& image) {
-        if (image.info.guest_address != address) {
-            return;
-        }
         if (ensure_valid && !image.SafeToDownload()) {
             return;
         }
@@ -729,6 +763,10 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
         LOG_WARNING(Render_Vulkan,
                     "Failed to find exact image match for copy addr={:#x}, size={:#x}", address,
                     size);
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: ambiguous image range lookup addr={:#x} size={:#x} "
+                   "candidates={}",
+                   address, size, image_ids.size());
     }
     return {};
 }

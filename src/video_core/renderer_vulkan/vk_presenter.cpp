@@ -3,6 +3,7 @@
 
 #include "common/debug.h"
 #include "common/elf_info.h"
+#include "common/assert.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
@@ -11,6 +12,7 @@
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/memory.h"
 #include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "imgui/renderer/imgui_impl_vulkan.h"
@@ -46,6 +48,40 @@
 #include <vk_mem_alloc.h>
 
 namespace Vulkan {
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
+
+static bool IsStrictBlackScreenWatchdogEnabled() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG");
+    return enabled;
+}
+
+static double GetEnvDouble(const char* name, const double fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+    char* end{};
+    const double parsed = std::strtod(value, &end);
+    return end != value ? parsed : fallback;
+}
+
+static u32 GetEnvU32(const char* name, const u32 fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+    char* end{};
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (end == value || parsed > std::numeric_limits<u32>::max()) {
+        return fallback;
+    }
+    return static_cast<u32>(parsed);
+}
 
 bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
     const vk::FormatProperties props{physical_device.getFormatProperties(format)};
@@ -130,7 +166,90 @@ static vk::Rect2D FitImage(s32 frame_width, s32 frame_height, s32 swapchain_widt
 
 enum class ScreenshotKind : u8 {
     GameOnly,
+    FrameImage,
     WithOverlays,
+};
+
+static const char* ScreenshotKindName(const ScreenshotKind kind) {
+    switch (kind) {
+    case ScreenshotKind::GameOnly:
+        return "GameOnly";
+    case ScreenshotKind::FrameImage:
+        return "FrameImage";
+    case ScreenshotKind::WithOverlays:
+        return "WithOverlays";
+    default:
+        return "Unknown";
+    }
+}
+
+struct LumaStats {
+    double avg_luma{};
+    u8 max_luma{};
+    double near_black_pct{};
+    u64 near_black_pixels{};
+    u64 nonblack_pixels{};
+    u64 pixel_count{};
+};
+
+struct WatchdogReadbackContext {
+    u64 frame_index{};
+    VAddr videoout_addr{};
+    u32 image_id{};
+    u64 guest_size{};
+    u32 flags{};
+    u32 usage_texture{};
+    u32 usage_storage{};
+    u32 usage_render_target{};
+    u32 usage_depth_target{};
+    u32 image_samples{};
+    u32 backing_samples{};
+    VAddr cmask_addr{};
+    VAddr fmask_addr{};
+    VAddr htile_addr{};
+    vk::ImageLayout layout{};
+    LumaStats guest_stats{};
+    const char* last_write_op{};
+    u64 last_write_address{};
+    u64 last_write_size{};
+    u64 last_write_detail0{};
+    u64 last_write_detail1{};
+    u64 last_write_sequence{};
+    uintptr_t frame_image{};
+    uintptr_t frame_view{};
+    uintptr_t frame_texture{};
+};
+
+struct BlackFrameWatchdogConfig {
+    double near_black_pct{99.5};
+    u8 max_luma{8};
+    double avg_luma{2.0};
+    u32 consecutive_frames{3};
+};
+
+struct BlackFrameWatchdog {
+    explicit BlackFrameWatchdog()
+        : config{
+              .near_black_pct =
+                  GetEnvDouble("SHADPS4_BLACK_WATCHDOG_NEAR_BLACK_PCT", 99.5),
+              .max_luma = static_cast<u8>(
+                  std::clamp(GetEnvU32("SHADPS4_BLACK_WATCHDOG_MAX_LUMA", 8), 0u, 255u)),
+              .avg_luma = GetEnvDouble("SHADPS4_BLACK_WATCHDOG_AVG_LUMA", 2.0),
+              .consecutive_frames =
+                  std::max<u32>(GetEnvU32("SHADPS4_BLACK_WATCHDOG_CONSECUTIVE_FRAMES", 3), 1),
+          } {}
+
+    bool IsNearBlack(const LumaStats& stats) const {
+        return stats.pixel_count > 0 && stats.near_black_pct >= config.near_black_pct &&
+               stats.max_luma <= config.max_luma && stats.avg_luma <= config.avg_luma;
+    }
+
+    BlackFrameWatchdogConfig config{};
+    std::mutex mutex;
+    bool saw_nonblack_game_frame{};
+    bool last_armed{};
+    std::array<u32, 3> consecutive_black{};
+    std::array<LumaStats, 3> last_stats{};
 };
 
 static bool IsTraceRenderEnabled() {
@@ -154,6 +273,8 @@ static u64 GetTraceVideoOutInterval() {
 struct ScreenshotReadback {
     ScreenshotKind kind{};
     std::vector<std::filesystem::path> paths{};
+    WatchdogReadbackContext watchdog_context{};
+    bool watchdog{};
     VideoCore::Buffer buffer;
     u32 width{};
     u32 height{};
@@ -162,8 +283,11 @@ struct ScreenshotReadback {
 
     ScreenshotReadback(const Instance& instance, Scheduler& scheduler, ScreenshotKind kind_,
                        std::vector<std::filesystem::path> paths_, const u32 width_,
-                       const u32 height_, const vk::Format format_, const bool hdr_encoded_)
+                       const u32 height_, const vk::Format format_, const bool hdr_encoded_,
+                       WatchdogReadbackContext watchdog_context_ = {},
+                       const bool watchdog_ = false)
         : kind{kind_}, paths{std::move(paths_)},
+          watchdog_context{watchdog_context_}, watchdog{watchdog_},
           buffer{instance,
                  scheduler,
                  VideoCore::MemoryUsage::Download,
@@ -220,7 +344,9 @@ static std::vector<std::filesystem::path> BuildScreenshotPaths(const ScreenshotK
     stamp << std::put_time(&local_tm, "%Y%m%d_%H%M%S") << '_' << std::setw(3) << std::setfill('0')
           << ms;
 
-    const char* suffix = kind == ScreenshotKind::GameOnly ? "game" : "hud";
+    const char* suffix = kind == ScreenshotKind::GameOnly     ? "game"
+                         : kind == ScreenshotKind::FrameImage ? "frame"
+                                                              : "hud";
     const auto first_sequence = screenshot_sequence.fetch_add(count, std::memory_order_relaxed);
 
     paths.reserve(count);
@@ -430,6 +556,99 @@ static bool ConvertReadbackToRgba8(const ScreenshotReadback& readback, std::vect
     }
 }
 
+static LumaStats ComputeLumaStats(const std::span<const u8> rgba, const u32 width,
+                                  const u32 height) {
+    LumaStats stats{};
+    if (rgba.empty()) {
+        return stats;
+    }
+
+    u64 luma_sum = 0;
+    stats.pixel_count = static_cast<u64>(width) * static_cast<u64>(height);
+    for (u64 i = 0; i < stats.pixel_count; ++i) {
+        const size_t offset = static_cast<size_t>(i) * 4;
+        const u8 r = rgba[offset + 0];
+        const u8 g = rgba[offset + 1];
+        const u8 b = rgba[offset + 2];
+        const u8 luma = static_cast<u8>((static_cast<u32>(r) * 54 + static_cast<u32>(g) * 183 +
+                                         static_cast<u32>(b) * 19) >>
+                                        8);
+        luma_sum += luma;
+        stats.max_luma = std::max(stats.max_luma, luma);
+        if (luma <= 4) {
+            stats.near_black_pixels++;
+        }
+    }
+
+    stats.nonblack_pixels = stats.pixel_count - stats.near_black_pixels;
+    stats.avg_luma =
+        stats.pixel_count == 0 ? 0.0 : static_cast<double>(luma_sum) / stats.pixel_count;
+    stats.near_black_pct = stats.pixel_count == 0
+                               ? 0.0
+                               : (100.0 * static_cast<double>(stats.near_black_pixels)) /
+                                     stats.pixel_count;
+    return stats;
+}
+
+static LumaStats ComputeRawGuestLumaStats(const VAddr address, const u32 width, const u32 height,
+                                          const u32 pitch, const u32 bits_per_pixel,
+                                          const u64 guest_size) {
+    const u32 bytes_per_pixel = std::max<u32>(bits_per_pixel / 8, 1);
+    const u64 row_bytes = static_cast<u64>(std::max(width, pitch)) * bytes_per_pixel;
+    const u64 read_size = std::min<u64>(guest_size, row_bytes * height);
+    LumaStats stats{};
+    if (address == 0 || width == 0 || height == 0 || read_size == 0) {
+        return stats;
+    }
+
+    std::vector<u8> data(read_size);
+    Core::Memory::Instance()->CopySparseMemory(address, data.data(), read_size);
+    stats.pixel_count = static_cast<u64>(width) * height;
+
+    u64 luma_sum = 0;
+    for (u32 y = 0; y < height; ++y) {
+        const u64 row_offset = static_cast<u64>(y) * row_bytes;
+        if (row_offset >= data.size()) {
+            break;
+        }
+        for (u32 x = 0; x < width; ++x) {
+            const u64 pixel_offset = row_offset + static_cast<u64>(x) * bytes_per_pixel;
+            if (pixel_offset >= data.size()) {
+                break;
+            }
+
+            const u8 r = data[static_cast<size_t>(pixel_offset + std::min<u32>(2, bytes_per_pixel - 1))];
+            const u8 g = data[static_cast<size_t>(pixel_offset + std::min<u32>(1, bytes_per_pixel - 1))];
+            const u8 b = data[static_cast<size_t>(pixel_offset)];
+            const u8 luma = static_cast<u8>((static_cast<u32>(r) * 54 + static_cast<u32>(g) * 183 +
+                                             static_cast<u32>(b) * 19) >>
+                                            8);
+            luma_sum += luma;
+            stats.max_luma = std::max(stats.max_luma, luma);
+            if (luma <= 4) {
+                stats.near_black_pixels++;
+            }
+        }
+    }
+
+    stats.nonblack_pixels = stats.pixel_count - stats.near_black_pixels;
+    stats.avg_luma =
+        stats.pixel_count == 0 ? 0.0 : static_cast<double>(luma_sum) / stats.pixel_count;
+    stats.near_black_pct = stats.pixel_count == 0
+                               ? 0.0
+                               : (100.0 * static_cast<double>(stats.near_black_pixels)) /
+                                     stats.pixel_count;
+    return stats;
+}
+
+static void InvalidateReadbackBuffer(const VideoCore::Buffer& buffer) {
+    if (buffer.is_coherent || buffer.SizeBytes() == 0) {
+        return;
+    }
+    vmaInvalidateAllocation(buffer.instance->GetAllocator(), buffer.buffer.allocation, 0,
+                            buffer.SizeBytes());
+}
+
 static bool WritePng(const std::filesystem::path& path, const std::span<const u8> rgba,
                      const u32 width, const u32 height) {
     Common::FS::IOFile file(path, Common::FS::FileAccessMode::Create);
@@ -471,35 +690,121 @@ static bool WritePng(const std::filesystem::path& path, const std::span<const u8
 
 static void LogScreenshotStats(const std::filesystem::path& path, const std::span<const u8> rgba,
                                const u32 width, const u32 height) {
-    if (rgba.empty()) {
+    const auto stats = ComputeLumaStats(rgba, width, height);
+    LOG_INFO(Render_Vulkan,
+             "TRACE_SCREENSHOT path={} size={}x{} avg_luma={:.2f} max_luma={} near_black={:.2f}%",
+             path.string(), width, height, stats.avg_luma, stats.max_luma,
+             stats.near_black_pct);
+}
+
+static void ProcessBlackWatchdogReadbacks(
+    const std::shared_ptr<BlackFrameWatchdog>& watchdog,
+    const std::vector<ScreenshotReadback>& readbacks) {
+    if (!watchdog || !IsStrictBlackScreenWatchdogEnabled()) {
+        return;
+    }
+    if (!Common::Trace::IsBlackScreenWatchdogArmed()) {
         return;
     }
 
-    u64 luma_sum = 0;
-    u8 max_luma = 0;
-    u64 near_black_pixels = 0;
-    const u64 pixel_count = static_cast<u64>(width) * static_cast<u64>(height);
-    for (u64 i = 0; i < pixel_count; ++i) {
-        const size_t offset = static_cast<size_t>(i) * 4;
-        const u8 r = rgba[offset + 0];
-        const u8 g = rgba[offset + 1];
-        const u8 b = rgba[offset + 2];
-        const u8 luma = static_cast<u8>((static_cast<u32>(r) * 54 + static_cast<u32>(g) * 183 +
-                                         static_cast<u32>(b) * 19) >>
-                                        8);
-        luma_sum += luma;
-        max_luma = std::max(max_luma, luma);
-        if (luma <= 4) {
-            near_black_pixels++;
+    for (const auto& readback : readbacks) {
+        if (!readback.watchdog) {
+            continue;
         }
-    }
+        InvalidateReadbackBuffer(readback.buffer);
 
-    const double avg_luma = pixel_count == 0 ? 0.0 : static_cast<double>(luma_sum) / pixel_count;
-    const double near_black_pct =
-        pixel_count == 0 ? 0.0 : (100.0 * static_cast<double>(near_black_pixels)) / pixel_count;
-    LOG_INFO(Render_Vulkan,
-             "TRACE_SCREENSHOT path={} size={}x{} avg_luma={:.2f} max_luma={} near_black={:.2f}%",
-             path.string(), width, height, avg_luma, max_luma, near_black_pct);
+        std::vector<u8> rgba;
+        const bool converted = ConvertReadbackToRgba8(readback, rgba);
+        ASSERT_MSG(converted,
+                   "Strict black-screen watchdog: failed to convert {} readback frame={} "
+                   "size={}x{} format={}",
+                   ScreenshotKindName(readback.kind), readback.watchdog_context.frame_index,
+                   readback.width, readback.height, vk::to_string(readback.format));
+
+        const auto stats = ComputeLumaStats(rgba, readback.width, readback.height);
+        const size_t stage_index = static_cast<size_t>(readback.kind);
+        ASSERT_MSG(stage_index < watchdog->consecutive_black.size(),
+                   "Strict black-screen watchdog: invalid stage index {}", stage_index);
+
+        std::scoped_lock lock{watchdog->mutex};
+        const bool armed = Common::Trace::IsBlackScreenWatchdogArmed();
+        if (armed && !watchdog->last_armed) {
+            watchdog->saw_nonblack_game_frame = false;
+            watchdog->consecutive_black.fill(0);
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_BLACK_WATCHDOG armed; waiting for first nonblack GameOnly frame");
+        } else if (!armed && watchdog->last_armed) {
+            watchdog->saw_nonblack_game_frame = false;
+            watchdog->consecutive_black.fill(0);
+            LOG_WARNING(Render_Vulkan, "TRACE_BLACK_WATCHDOG disarmed");
+        }
+        watchdog->last_armed = armed;
+
+        const bool is_black = watchdog->IsNearBlack(stats);
+        if (readback.kind == ScreenshotKind::GameOnly && !is_black) {
+            watchdog->saw_nonblack_game_frame = true;
+        }
+
+        if (watchdog->saw_nonblack_game_frame && is_black) {
+            watchdog->consecutive_black[stage_index]++;
+        } else {
+            watchdog->consecutive_black[stage_index] = 0;
+        }
+        watchdog->last_stats[stage_index] = stats;
+
+        const auto& ctx = readback.watchdog_context;
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_BLACK_WATCHDOG stage={} frame={} active={} black={} consecutive={} "
+                 "size={}x{} format={} avg_luma={:.2f} max_luma={} near_black={:.2f}% "
+                 "nonblack={} guest_avg_luma={:.2f} guest_max_luma={} "
+                 "guest_near_black={:.2f}% guest_nonblack={} last_writer={} "
+                 "last_writer_seq={} last_writer_addr={:#x} last_writer_size={} "
+                 "last_writer_detail0={:#x} last_writer_detail1={:#x} "
+                 "videoout_addr={:#x} image_id={} guest_size={} flags={:#x} "
+                 "usage=t{}s{}rt{}dt{} samples={} backing_samples={} layout={} cmask={:#x} "
+                 "fmask={:#x} htile={:#x} frame_image={:#x} frame_view={:#x} "
+                 "frame_texture={:#x}",
+                 ScreenshotKindName(readback.kind), ctx.frame_index,
+                 watchdog->saw_nonblack_game_frame, is_black,
+                 watchdog->consecutive_black[stage_index], readback.width, readback.height,
+                 vk::to_string(readback.format), stats.avg_luma, stats.max_luma,
+                 stats.near_black_pct, stats.nonblack_pixels, ctx.guest_stats.avg_luma,
+                 ctx.guest_stats.max_luma, ctx.guest_stats.near_black_pct,
+                 ctx.guest_stats.nonblack_pixels, ctx.last_write_op ? ctx.last_write_op : "none",
+                 ctx.last_write_sequence, ctx.last_write_address, ctx.last_write_size,
+                 ctx.last_write_detail0, ctx.last_write_detail1, ctx.videoout_addr, ctx.image_id,
+                 ctx.guest_size, ctx.flags, ctx.usage_texture, ctx.usage_storage,
+                 ctx.usage_render_target, ctx.usage_depth_target, ctx.image_samples,
+                 ctx.backing_samples, vk::to_string(ctx.layout), ctx.cmask_addr, ctx.fmask_addr,
+                 ctx.htile_addr, ctx.frame_image, ctx.frame_view, ctx.frame_texture);
+
+        ASSERT_MSG(!watchdog->saw_nonblack_game_frame || !is_black ||
+                       watchdog->consecutive_black[stage_index] <
+                           watchdog->config.consecutive_frames,
+                   "Strict black-screen watchdog: persistent unexpected black at stage={} "
+                   "frame={} consecutive={} threshold={} size={}x{} format={} avg_luma={:.2f} "
+                   "max_luma={} near_black={:.2f}% nonblack={} guest_avg_luma={:.2f} "
+                   "guest_max_luma={} guest_near_black={:.2f}% guest_nonblack={} "
+                   "last_writer={} last_writer_seq={} last_writer_addr={:#x} "
+                   "last_writer_size={} last_writer_detail0={:#x} last_writer_detail1={:#x} "
+                   "videoout_addr={:#x} image_id={} "
+                   "guest_size={} flags={:#x} usage=t{}s{}rt{}dt{} samples={} "
+                   "backing_samples={} layout={} cmask={:#x} fmask={:#x} htile={:#x} "
+                   "frame_image={:#x} frame_view={:#x} frame_texture={:#x}",
+                   ScreenshotKindName(readback.kind), ctx.frame_index,
+                   watchdog->consecutive_black[stage_index],
+                   watchdog->config.consecutive_frames, readback.width, readback.height,
+                   vk::to_string(readback.format), stats.avg_luma, stats.max_luma,
+                   stats.near_black_pct, stats.nonblack_pixels, ctx.guest_stats.avg_luma,
+                   ctx.guest_stats.max_luma, ctx.guest_stats.near_black_pct,
+                   ctx.guest_stats.nonblack_pixels, ctx.last_write_op ? ctx.last_write_op : "none",
+                   ctx.last_write_sequence, ctx.last_write_address, ctx.last_write_size,
+                   ctx.last_write_detail0, ctx.last_write_detail1, ctx.videoout_addr,
+                   ctx.image_id, ctx.guest_size, ctx.flags, ctx.usage_texture, ctx.usage_storage,
+                   ctx.usage_render_target, ctx.usage_depth_target, ctx.image_samples,
+                   ctx.backing_samples, vk::to_string(ctx.layout), ctx.cmask_addr, ctx.fmask_addr,
+                   ctx.htile_addr, ctx.frame_image, ctx.frame_view, ctx.frame_texture);
+    }
 }
 
 static void SavePendingScreenshots(const std::vector<ScreenshotReadback>& readbacks) {
@@ -508,6 +813,8 @@ static void SavePendingScreenshots(const std::vector<ScreenshotReadback>& readba
         if (readback.paths.empty()) {
             continue;
         }
+
+        InvalidateReadbackBuffer(readback.buffer);
 
         std::vector<u8> rgba;
         if (!ConvertReadbackToRgba8(readback, rgba)) {
@@ -572,6 +879,16 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
+    if (IsStrictBlackScreenWatchdogEnabled()) {
+        black_frame_watchdog = std::make_shared<BlackFrameWatchdog>();
+        const auto& cfg = black_frame_watchdog->config;
+        LOG_WARNING(Render_Vulkan,
+                    "Strict black-screen watchdog enabled: near_black_pct={:.2f} max_luma={} "
+                    "avg_luma={:.2f} consecutive_frames={} armed={}",
+                    cfg.near_black_pct, cfg.max_luma, cfg.avg_luma, cfg.consecutive_frames,
+                    Common::Trace::IsBlackScreenWatchdogArmed());
+    }
+
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
 
@@ -701,6 +1018,12 @@ Frame* Presenter::PrepareLastFrame() {
         if (result == vk::Result::eSuccess) {
             break;
         }
+        ASSERT_MSG(!IsStrictRenderValidationEnabled() || result != vk::Result::eTimeout,
+                   "Strict render validation: timed out waiting for last submitted frame fence "
+                   "frame={} image={:#x} size={}x{} ready_tick={}",
+                   static_cast<const void*>(frame),
+                   reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)), frame->width,
+                   frame->height, frame->ready_tick);
         if (result == vk::Result::eTimeout) {
             ++timeout_count;
             LogGpuWaitTimeout("prepare_last_frame_present_done", timeout);
@@ -773,9 +1096,28 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
     auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
     const auto image_id = texture_cache.FindImage(desc);
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() || image_id,
+               "Strict render validation: VideoOut image lookup returned null cpu_addr={:#x} "
+               "attr={}x{} pitch={} format={} tiling={} option={:#x}",
+               cpu_address, attribute.attrib.width, attribute.attrib.height,
+               attribute.attrib.pitch_in_pixel,
+               Libraries::VideoOut::GetPixelFormatString(attribute.attrib.pixel_format),
+               attribute.attrib.tiling_mode == Libraries::VideoOut::TilingMode::Tile ? "tile"
+                                                                                     : "linear",
+               attribute.attrib.option);
     texture_cache.UpdateImage(image_id);
 
     Frame* frame = GetRenderFrame();
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                   (frame != nullptr && frame->image && frame->image_view && frame->imgui_texture &&
+                    frame->width > 0 && frame->height > 0),
+               "Strict render validation: invalid render frame frame={} image={:#x} view={:#x} "
+               "imgui_texture={} size={}x{}",
+               static_cast<const void*>(frame),
+               frame ? reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)) : 0,
+               frame ? reinterpret_cast<uintptr_t>(static_cast<VkImageView>(frame->image_view)) : 0,
+               frame ? reinterpret_cast<uintptr_t>(frame->imgui_texture) : 0,
+               frame ? frame->width : 0, frame ? frame->height : 0);
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -809,6 +1151,17 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     view_info.mapping.a = vk::ComponentSwizzle::eOne;
 
     auto& image = texture_cache.GetImage(image_id);
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                   (image.info.guest_address == cpu_address && image.info.size.width > 0 &&
+                    image.info.size.height > 0 && image.info.guest_size > 0 &&
+                    image.info.resources.layers > 0 && image.info.resources.levels > 0),
+               "Strict render validation: invalid VideoOut resolved image id={} cpu_addr={:#x} "
+               "guest_addr={:#x} guest_size={} size={}x{}x{} layers={} levels={} format={} "
+               "flags={:#x}",
+               image_id.index, cpu_address, image.info.guest_address, image.info.guest_size,
+               image.info.size.width, image.info.size.height, image.info.size.depth,
+               image.info.resources.layers, image.info.resources.levels,
+               vk::to_string(image.info.pixel_format), static_cast<u32>(image.flags));
     auto image_view = *image.FindView(view_info).image_view;
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
@@ -846,23 +1199,88 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                  usage_render_target, usage_depth_target);
     }
 
+    const bool black_watchdog_enabled =
+        black_frame_watchdog != nullptr && IsStrictBlackScreenWatchdogEnabled() &&
+        Common::Trace::IsBlackScreenWatchdogArmed() &&
+        !Libraries::SystemService::IsSplashVisible();
+    Common::Trace::RegisterVideoOutRange(cpu_address, image.info.guest_size);
+    const auto last_write =
+        Common::Trace::GetLastVideoOutWrite(cpu_address, image.info.guest_size);
+    const auto guest_stats =
+        black_watchdog_enabled
+            ? ComputeRawGuestLumaStats(cpu_address, image.info.size.width, image.info.size.height,
+                                       image.info.pitch, image.info.num_bits,
+                                       image.info.guest_size)
+            : LumaStats{};
+    const WatchdogReadbackContext watchdog_context{
+        .frame_index = frame_number,
+        .videoout_addr = cpu_address,
+        .image_id = image_id.index,
+        .guest_size = image.info.guest_size,
+        .flags = static_cast<u32>(image.flags),
+        .usage_texture = image.usage.texture,
+        .usage_storage = image.usage.storage,
+        .usage_render_target = image.usage.render_target,
+        .usage_depth_target = image.usage.depth_target,
+        .image_samples = image.info.num_samples,
+        .backing_samples = image.backing->num_samples,
+        .cmask_addr = image.info.meta_info.cmask_addr,
+        .fmask_addr = image.info.meta_info.fmask_addr,
+        .htile_addr = image.info.meta_info.htile_addr,
+        .layout = image.backing->state.layout,
+        .guest_stats = guest_stats,
+        .last_write_op = last_write.op,
+        .last_write_address = last_write.address,
+        .last_write_size = last_write.size,
+        .last_write_detail0 = last_write.detail0,
+        .last_write_detail1 = last_write.detail1,
+        .last_write_sequence = last_write.sequence,
+        .frame_image = reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)),
+        .frame_view = reinterpret_cast<uintptr_t>(static_cast<VkImageView>(frame->image_view)),
+        .frame_texture = reinterpret_cast<uintptr_t>(frame->imgui_texture),
+    };
+    frame->watchdog_frame_index = watchdog_context.frame_index;
+    frame->watchdog_videoout_addr = watchdog_context.videoout_addr;
+    frame->watchdog_image_id = watchdog_context.image_id;
+    frame->watchdog_guest_size = watchdog_context.guest_size;
+    frame->watchdog_flags = watchdog_context.flags;
+    frame->watchdog_usage_texture = watchdog_context.usage_texture;
+    frame->watchdog_usage_storage = watchdog_context.usage_storage;
+    frame->watchdog_usage_render_target = watchdog_context.usage_render_target;
+    frame->watchdog_usage_depth_target = watchdog_context.usage_depth_target;
+    frame->watchdog_image_samples = watchdog_context.image_samples;
+    frame->watchdog_backing_samples = watchdog_context.backing_samples;
+    frame->watchdog_cmask_addr = watchdog_context.cmask_addr;
+    frame->watchdog_fmask_addr = watchdog_context.fmask_addr;
+    frame->watchdog_htile_addr = watchdog_context.htile_addr;
+    frame->watchdog_layout = watchdog_context.layout;
+
     const u32 capture_game_only_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
     std::vector<ScreenshotReadback> pending_screenshots;
-    if (capture_game_only_count > 0) {
-        pending_screenshots.reserve(1);
+    if (capture_game_only_count > 0 || black_watchdog_enabled) {
+        pending_screenshots.reserve(2);
         const bool hdr_encoded =
             attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Bt2020Pq;
-        pending_screenshots.emplace_back(
-            instance, draw_scheduler, ScreenshotKind::GameOnly,
-            BuildScreenshotPaths(ScreenshotKind::GameOnly, capture_game_only_count),
-            image_size.width, image_size.height, view_info.format, hdr_encoded);
-        auto& readback = pending_screenshots.back();
+        if (capture_game_only_count > 0) {
+            pending_screenshots.emplace_back(
+                instance, draw_scheduler, ScreenshotKind::GameOnly,
+                BuildScreenshotPaths(ScreenshotKind::GameOnly, capture_game_only_count),
+                image_size.width, image_size.height, view_info.format, hdr_encoded);
+        }
+        if (black_watchdog_enabled) {
+            pending_screenshots.emplace_back(instance, draw_scheduler, ScreenshotKind::GameOnly,
+                                             std::vector<std::filesystem::path>{},
+                                             image_size.width, image_size.height, view_info.format,
+                                             hdr_encoded, watchdog_context, true);
+        }
 
         // Capture the guest output before any host-side scaling (FSR/PP) is applied.
         image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
                       cmdbuf);
-        CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
-                            readback);
+        for (auto& readback : pending_screenshots) {
+            CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
+                                readback);
+        }
     }
 
     // Continue with host-side passes that draw the displayed (scaled) frame.
@@ -880,8 +1298,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     if (!pending_screenshots.empty()) {
         deferred_screenshots =
             std::make_shared<std::vector<ScreenshotReadback>>(std::move(pending_screenshots));
+        const auto watchdog = black_frame_watchdog;
         draw_scheduler.DeferPriorityOperation(
-            [deferred_screenshots]() { SavePendingScreenshots(*deferred_screenshots); });
+            [deferred_screenshots, watchdog]() {
+                SavePendingScreenshots(*deferred_screenshots);
+                ProcessBlackWatchdogReadbacks(watchdog, *deferred_screenshots);
+            });
     }
 
     // Flush frame creation commands.
@@ -986,6 +1408,11 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
         if (!swapchain.AcquireNextImage()) {
             // User resizes the window too fast and GPU can't keep up. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: swapchain image acquisition failed twice; "
+                       "would skip frame size={}x{} frame={} frame_image={:#x}",
+                       window.GetWidth(), window.GetHeight(), static_cast<const void*>(frame),
+                       reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)));
             free_frame();
             return;
         }
@@ -1002,13 +1429,45 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
 
     const vk::Image swapchain_image = swapchain.Image();
     const vk::ImageView swapchain_image_view = swapchain.ImageView();
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                   (swapchain_image && swapchain_image_view && frame && frame->imgui_texture),
+               "Strict render validation: invalid present inputs swapchain_image={:#x} "
+               "swapchain_view={:#x} frame={} frame_texture={}",
+               reinterpret_cast<uintptr_t>(static_cast<VkImage>(swapchain_image)),
+               reinterpret_cast<uintptr_t>(static_cast<VkImageView>(swapchain_image_view)),
+               static_cast<const void*>(frame),
+               frame ? reinterpret_cast<uintptr_t>(frame->imgui_texture) : 0);
 
     auto& scheduler = present_scheduler;
     const auto cmdbuf = scheduler.CommandBuffer();
     const u32 capture_with_overlays_count = VideoCore::ConsumeWithOverlaysScreenshotRequests();
+    const bool black_watchdog_enabled =
+        black_frame_watchdog != nullptr && IsStrictBlackScreenWatchdogEnabled() &&
+        Common::Trace::IsBlackScreenWatchdogArmed() &&
+        !Libraries::SystemService::IsSplashVisible();
+    const WatchdogReadbackContext watchdog_context{
+        .frame_index = frame->watchdog_frame_index,
+        .videoout_addr = frame->watchdog_videoout_addr,
+        .image_id = frame->watchdog_image_id,
+        .guest_size = frame->watchdog_guest_size,
+        .flags = frame->watchdog_flags,
+        .usage_texture = frame->watchdog_usage_texture,
+        .usage_storage = frame->watchdog_usage_storage,
+        .usage_render_target = frame->watchdog_usage_render_target,
+        .usage_depth_target = frame->watchdog_usage_depth_target,
+        .image_samples = frame->watchdog_image_samples,
+        .backing_samples = frame->watchdog_backing_samples,
+        .cmask_addr = frame->watchdog_cmask_addr,
+        .fmask_addr = frame->watchdog_fmask_addr,
+        .htile_addr = frame->watchdog_htile_addr,
+        .layout = frame->watchdog_layout,
+        .frame_image = reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)),
+        .frame_view = reinterpret_cast<uintptr_t>(static_cast<VkImageView>(frame->image_view)),
+        .frame_texture = reinterpret_cast<uintptr_t>(frame->imgui_texture),
+    };
     std::vector<ScreenshotReadback> pending_screenshots;
-    if (capture_with_overlays_count > 0) {
-        pending_screenshots.reserve(1);
+    if (capture_with_overlays_count > 0 || black_watchdog_enabled) {
+        pending_screenshots.reserve(3);
     }
 
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
@@ -1023,6 +1482,56 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
                           MarkersPalette::GpuMarkerColor, profiler_ctx != nullptr);
 
         const vk::Extent2D extent = swapchain.GetExtent();
+        if (black_watchdog_enabled) {
+            pending_screenshots.emplace_back(instance, scheduler, ScreenshotKind::FrameImage,
+                                             std::vector<std::filesystem::path>{}, frame->width,
+                                             frame->height, swapchain.GetCurrentImageFormat(),
+                                             frame->is_hdr, watchdog_context, true);
+            auto& readback = pending_screenshots.back();
+
+            const vk::ImageMemoryBarrier frame_to_transfer{
+                .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                .oldLayout = vk::ImageLayout::eGeneral,
+                .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = frame->image,
+                .subresourceRange{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                   vk::PipelineStageFlagBits::eTransfer,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, frame_to_transfer);
+            CopyImageToReadback(cmdbuf, frame->image, vk::ImageLayout::eTransferSrcOptimal,
+                                readback);
+
+            const vk::ImageMemoryBarrier frame_to_general{
+                .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+                .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = frame->image,
+                .subresourceRange{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                   vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, frame_to_general);
+        }
+
         const std::array pre_barriers{
             vk::ImageMemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eNone,
@@ -1118,15 +1627,21 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
         }
         ImGui::Core::Render(cmdbuf, swapchain_image_view, swapchain.GetExtent());
 
-        if (capture_with_overlays_count > 0) {
-            pending_screenshots.emplace_back(
-                instance, scheduler, ScreenshotKind::WithOverlays,
-                BuildScreenshotPaths(ScreenshotKind::WithOverlays, capture_with_overlays_count),
-                extent.width, extent.height,
-                swapchain.GetHDR() ? vk::Format::eA2B10G10R10UnormPack32
-                                   : swapchain.GetSurfaceFormat().format,
-                swapchain.GetHDR());
-            auto& readback = pending_screenshots.back();
+        if (capture_with_overlays_count > 0 || black_watchdog_enabled) {
+            if (capture_with_overlays_count > 0) {
+                pending_screenshots.emplace_back(
+                    instance, scheduler, ScreenshotKind::WithOverlays,
+                    BuildScreenshotPaths(ScreenshotKind::WithOverlays, capture_with_overlays_count),
+                    extent.width, extent.height, swapchain.GetCurrentImageFormat(),
+                    swapchain.GetHDR());
+            }
+            if (black_watchdog_enabled) {
+                pending_screenshots.emplace_back(instance, scheduler, ScreenshotKind::WithOverlays,
+                                                 std::vector<std::filesystem::path>{},
+                                                 extent.width, extent.height,
+                                                 swapchain.GetCurrentImageFormat(),
+                                                 swapchain.GetHDR(), watchdog_context, true);
+            }
 
             const vk::ImageMemoryBarrier to_transfer{
                 .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
@@ -1148,8 +1663,12 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
                                    vk::PipelineStageFlagBits::eTransfer,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, to_transfer);
-            CopyImageToReadback(cmdbuf, swapchain_image, vk::ImageLayout::eTransferSrcOptimal,
-                                readback);
+            for (auto& readback : pending_screenshots) {
+                if (readback.kind == ScreenshotKind::WithOverlays) {
+                    CopyImageToReadback(cmdbuf, swapchain_image,
+                                        vk::ImageLayout::eTransferSrcOptimal, readback);
+                }
+            }
             swapchain_copied_for_screenshot = true;
         }
 
@@ -1192,8 +1711,12 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     if (!pending_screenshots.empty()) {
         deferred_screenshots =
             std::make_shared<std::vector<ScreenshotReadback>>(std::move(pending_screenshots));
+        const auto watchdog = black_frame_watchdog;
         scheduler.DeferPriorityOperation(
-            [deferred_screenshots]() { SavePendingScreenshots(*deferred_screenshots); });
+            [deferred_screenshots, watchdog]() {
+                SavePendingScreenshots(*deferred_screenshots);
+                ProcessBlackWatchdogReadbacks(watchdog, *deferred_screenshots);
+            });
     }
 
     SubmitInfo info{};
@@ -1244,6 +1767,12 @@ Frame* Presenter::GetRenderFrame() {
     while (wait() != vk::Result::eSuccess) {
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
+        ASSERT_MSG(!IsStrictRenderValidationEnabled() || result != vk::Result::eTimeout,
+                   "Strict render validation: timed out waiting for reusable frame fence frame={} "
+                   "image={:#x} size={}x{} expected={}x{} ready_tick={}",
+                   static_cast<const void*>(frame),
+                   reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)), frame->width,
+                   frame->height, expected_frame_width, expected_frame_height, frame->ready_tick);
         // Retry if the waiting times out
         if (result == vk::Result::eTimeout) {
             ++timeout_count;
@@ -1265,6 +1794,13 @@ Frame* Presenter::GetRenderFrame() {
 }
 
 void Presenter::SetExpectedGameSize(s32 width, s32 height) {
+    if (width <= 0 || height <= 0) {
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: invalid expected game display size {}x{}", width,
+                   height);
+        return;
+    }
+
     const float ratio = (float)width / (float)height;
 
     expected_frame_height = height;

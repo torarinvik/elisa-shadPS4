@@ -7,6 +7,7 @@
 #include <limits>
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/trace_control.h"
 #include "core/emulator_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
@@ -19,6 +20,11 @@ namespace Vulkan {
 static bool EnvFlagEnabled(const char* name) {
     const char* value = std::getenv(name);
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
 }
 
 static constexpr vk::SurfaceFormatKHR SURFACE_FORMAT_HDR = {
@@ -102,6 +108,9 @@ void Swapchain::SetHDR(bool hdr) {
     if (result != vk::Result::eSuccess) {
         LOG_WARNING(ImGui, "Failed to wait for Vulkan device idle on mode change: {}",
                     vk::to_string(result));
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: device waitIdle failed during HDR mode change: {}",
+                   vk::to_string(result));
     }
 
     needs_hdr = hdr;
@@ -129,6 +138,9 @@ bool Swapchain::AcquireNextImage() {
     case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
     case vk::Result::eErrorUnknown:
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: swapchain acquire requires recreation: {}",
+                   vk::to_string(result));
         needs_recreation = true;
         break;
     default:
@@ -283,6 +295,9 @@ void Swapchain::Destroy() {
     if (wait_result != vk::Result::eSuccess) {
         LOG_WARNING(Render_Vulkan, "Failed to wait for device to become idle: {}",
                     vk::to_string(wait_result));
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: device waitIdle failed during swapchain destroy: {}",
+                   vk::to_string(wait_result));
     }
 
     for (auto& image_view : images_view) {

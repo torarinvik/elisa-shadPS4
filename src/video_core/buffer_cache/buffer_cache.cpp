@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "common/assert.h"
 #include "common/alignment.h"
 #include "common/debug.h"
 #include "common/scope_exit.h"
+#include "common/trace_control.h"
 #include "core/memory.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -15,6 +17,11 @@
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace VideoCore {
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 static constexpr size_t DataShareBufferSize = 64_KB;
 static constexpr size_t StagingBufferSize = 512_MB;
@@ -262,14 +269,26 @@ void BufferCache::BindIndexBuffer(u32 index_offset) {
 }
 
 void BufferCache::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds) {
+    Common::Trace::RecordVideoOutWrite("FillBuffer", address, num_bytes, value, is_gds);
     ASSERT_MSG(address % 4 == 0, "GDS offset must be dword aligned");
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() || num_bytes != 0,
+               "Strict render validation: zero-size FillBuffer address={:#x} value={:#x} gds={}",
+               address, value, is_gds);
     if (!is_gds) {
         texture_cache.ClearMeta(address);
-        if (!IsRegionGpuModified(address, num_bytes)) {
+        const bool aliases_image =
+            static_cast<bool>(texture_cache.FindImageFromRange(address, num_bytes, false));
+        ASSERT_MSG(!IsStrictRenderValidationEnabled() || !aliases_image ||
+                       IsRegionGpuModified(address, num_bytes),
+                   "Strict render validation: CPU FillBuffer aliases cached image but region is not "
+                   "marked GPU-modified address={:#x} size={} value={:#x}",
+                   address, num_bytes, value);
+        if (!aliases_image && !IsRegionGpuModified(address, num_bytes)) {
             u32* buffer = std::bit_cast<u32*>(address);
             std::fill(buffer, buffer + num_bytes / sizeof(u32), value);
             return;
         }
+        texture_cache.InvalidateMemoryFromGPU(address, num_bytes);
     }
     Buffer* buffer = [&] {
         if (is_gds) {
@@ -282,12 +301,22 @@ void BufferCache::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gd
 }
 
 void BufferCache::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
+    Common::Trace::RecordVideoOutWrite("CopyBufferDst", dst, num_bytes, src, dst_gds);
+    Common::Trace::RecordVideoOutWrite("CopyBufferSrc", src, num_bytes, dst, src_gds);
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() || num_bytes != 0,
+               "Strict render validation: zero-size CopyBuffer dst={:#x} src={:#x} dst_gds={} "
+               "src_gds={}",
+               dst, src, dst_gds, src_gds);
     if (!dst_gds && !IsRegionGpuModified(dst, num_bytes)) {
         const bool dst_aliases_image =
             static_cast<bool>(texture_cache.FindImageFromRange(dst, num_bytes, false));
         const bool src_aliases_image =
             !src_gds &&
             static_cast<bool>(texture_cache.FindImageFromRange(src, num_bytes, false));
+        ASSERT_MSG(!IsStrictRenderValidationEnabled() || !dst_aliases_image,
+                   "Strict render validation: CopyBuffer destination aliases cached image while "
+                   "taking non-GPU-modified path dst={:#x} src={:#x} size={}",
+                   dst, src, num_bytes);
         if (!src_gds && !IsRegionGpuModified(src, num_bytes) && !src_aliases_image &&
             !dst_aliases_image) {
             // Both buffers were not transferred to GPU yet. Can safely copy in host memory.
@@ -578,7 +607,12 @@ void BufferCache::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
 }
 
 BufferId BufferCache::CreateBuffer(VAddr device_addr, u32 wanted_size) {
-    const VAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
+    const VAddr max_addr = 1ULL << MemoryTracker::MAX_CPU_PAGE_BITS;
+    ASSERT_MSG(device_addr < max_addr, "Buffer address {:#x} is outside tracked CPU address space",
+               device_addr);
+    const VAddr requested_end =
+        wanted_size > max_addr - device_addr ? max_addr : device_addr + wanted_size;
+    const VAddr device_addr_end = Common::AlignUp(requested_end, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
@@ -768,6 +802,12 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, VAddr device_addr, 
         copy_size += mip_info.size;
     }
     if (copy_size == 0) {
+        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                   "Strict render validation: no image copy regions for buffer synchronization "
+                   "device_addr={:#x} size={} image_id={} image_addr={:#x} image_size={} "
+                   "buffer_addr={:#x} buffer_size={}",
+                   device_addr, size, image_id.index, image.info.guest_address,
+                   image.info.guest_size, buffer.CpuAddr(), buffer.SizeBytes());
         return false;
     }
     auto& tile_manager = texture_cache.GetTileManager();

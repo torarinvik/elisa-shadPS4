@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <memory>
 
 #include "core/libraries/videoout/buffer.h"
 #include "imgui/imgui_texture.h"
@@ -25,18 +26,33 @@ struct Liverpool;
 namespace Vulkan {
 
 struct Frame {
-    u32 width;
-    u32 height;
-    VmaAllocation allocation;
-    vk::Image image;
-    vk::ImageView image_view;
-    vk::Fence present_done;
-    vk::Semaphore ready_semaphore;
-    u64 ready_tick;
+    u32 width{};
+    u32 height{};
+    VmaAllocation allocation{};
+    vk::Image image{};
+    vk::ImageView image_view{};
+    vk::Fence present_done{};
+    vk::Semaphore ready_semaphore{};
+    u64 ready_tick{};
     bool is_hdr{false};
     u8 id{};
+    ImTextureID imgui_texture{};
 
-    ImTextureID imgui_texture;
+    u64 watchdog_frame_index{};
+    VAddr watchdog_videoout_addr{};
+    u32 watchdog_image_id{};
+    u64 watchdog_guest_size{};
+    u32 watchdog_flags{};
+    u32 watchdog_usage_texture{};
+    u32 watchdog_usage_storage{};
+    u32 watchdog_usage_render_target{};
+    u32 watchdog_usage_depth_target{};
+    u32 watchdog_image_samples{};
+    u32 watchdog_backing_samples{};
+    VAddr watchdog_cmask_addr{};
+    VAddr watchdog_fmask_addr{};
+    VAddr watchdog_htile_addr{};
+    vk::ImageLayout watchdog_layout{};
 };
 
 enum SchedulerType {
@@ -46,6 +62,7 @@ enum SchedulerType {
 };
 
 class Rasterizer;
+struct BlackFrameWatchdog;
 
 class Presenter {
 public:
@@ -128,7 +145,8 @@ private:
     vk::UniqueCommandPool command_pool;
     std::vector<Frame> present_frames;
     std::queue<Frame*> free_queue;
-    Frame* last_submit_frame;
+    Frame* last_submit_frame{};
+    std::shared_ptr<BlackFrameWatchdog> black_frame_watchdog;
     std::mutex free_mutex;
     std::condition_variable free_cv;
     std::condition_variable_any frame_cv;

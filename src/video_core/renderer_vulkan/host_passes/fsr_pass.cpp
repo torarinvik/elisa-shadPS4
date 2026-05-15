@@ -2,6 +2,7 @@
 //  SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include "common/trace_control.h"
 #include "core/emulator_settings.h"
 #include "video_core/host_shaders/fsr_comp.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
@@ -24,6 +25,11 @@ struct FSRConstants {
 };
 
 namespace Vulkan::HostPasses {
+
+static bool IsStrictRenderValidationEnabled() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_STRICT_RENDER_VALIDATION");
+    return enabled;
+}
 
 void FsrPass::Create(vk::Device device, VmaAllocator allocator, u32 num_images) {
     this->device = device;
@@ -139,6 +145,14 @@ void FsrPass::Create(vk::Device device, VmaAllocator allocator, u32 num_images) 
 vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
                               vk::Extent2D input_size, vk::Extent2D output_size, Settings settings,
                               bool hdr) {
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                   (input && input_size.width > 0 && input_size.height > 0 &&
+                    output_size.width > 0 && output_size.height > 0),
+               "Strict render validation: invalid FSR input view={:#x} input_size={}x{} "
+               "output_size={}x{} enabled={} rcas={} hdr={}",
+               reinterpret_cast<uintptr_t>(static_cast<VkImageView>(input)), input_size.width,
+               input_size.height, output_size.width, output_size.height, settings.enable,
+               settings.use_rcas, hdr);
     if (!settings.enable) {
         DebugState.is_using_fsr = false;
         return input;
@@ -163,6 +177,18 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
     if (img.dirty) {
         CreateImages(img);
     }
+    ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
+                   (img.intermediary_image && img.output_image && img.intermediary_image_view &&
+                    img.output_image_view && width > 0 && height > 0),
+               "Strict render validation: invalid FSR working images id={} dirty={} "
+               "intermediate={:#x} intermediate_view={:#x} output={:#x} output_view={:#x} "
+               "cur_size={}x{} output_initialized={}",
+               img.id, img.dirty,
+               reinterpret_cast<uintptr_t>(static_cast<VkImage>(img.intermediary_image.image)),
+               reinterpret_cast<uintptr_t>(static_cast<VkImageView>(img.intermediary_image_view.get())),
+               reinterpret_cast<uintptr_t>(static_cast<VkImage>(img.output_image.image)),
+               reinterpret_cast<uintptr_t>(static_cast<VkImageView>(img.output_image_view.get())),
+               width, height, img.output_initialized);
 
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{

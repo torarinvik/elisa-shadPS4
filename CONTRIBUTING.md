@@ -1,9 +1,16 @@
 <!--
 SPDX-FileCopyrightText: 2024 shadPS4 Emulator Project
+SPDX-FileCopyrightText: 2026 Elisa-core port maintainers
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
 # Style guidelines
+
+> [!IMPORTANT]
+> This repository is an independent Elisa-core port derived from upstream
+> shadPS4. Contributions should be scoped to this port unless they are explicitly
+> syncing upstream changes. Preserve upstream copyright notices, SPDX headers,
+> and attribution when modifying derived files.
 
 ## General Rules
 
