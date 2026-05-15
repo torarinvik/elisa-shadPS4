@@ -8,7 +8,9 @@
 
 #include <imgui.h>
 
+#include "common/logging/log.h"
 #include "imgui_impl_vulkan.h"
+#include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 
 #ifndef IM_MAX
 #define IM_MAX(A, B) (((A) >= (B)) ? (A) : (B))
@@ -222,6 +224,37 @@ static void CheckVkErr(vk::Result res) {
     }
 }
 
+static bool SubmitAndWaitForUpload(vk::Queue queue, vk::Device device,
+                                   const vk::SubmitInfo& submit_info, const char* wait_name) {
+    if (!::Vulkan::IsFiniteGpuWaitTimeoutEnabled()) {
+        CheckVkErr(queue.submit({submit_info}));
+        CheckVkErr(queue.waitIdle());
+        return true;
+    }
+
+    const auto [fence_result, fence] = device.createFence({});
+    CheckVkErr(fence_result);
+    if (fence_result != vk::Result::eSuccess) {
+        return false;
+    }
+
+    CheckVkErr(queue.submit({submit_info}, fence));
+    const u64 timeout = ::Vulkan::GpuWaitTimeoutNs();
+    const vk::Result wait_result = device.waitForFences({fence}, true, timeout);
+    if (wait_result == vk::Result::eSuccess) {
+        device.destroyFence(fence);
+        return true;
+    }
+    if (wait_result == vk::Result::eTimeout) {
+        ::Vulkan::LogGpuWaitTimeout(wait_name, timeout);
+    } else {
+        ::Vulkan::LogGpuWaitFailure(wait_name, wait_result);
+    }
+
+    LOG_ERROR(ImGui, "Leaving ImGui upload resources alive after GPU wait failure: {}", wait_name);
+    return false;
+}
+
 // Same as IM_MEMALIGN(). 'alignment' must be a power of two.
 static inline vk::DeviceSize AlignBufferSize(vk::DeviceSize size, vk::DeviceSize alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
@@ -235,8 +268,9 @@ void UploadTextureData::Upload() {
         .commandBufferCount = 1,
         .pCommandBuffers = &command_buffer,
     };
-    CheckVkErr(v.queue.submit({submit_info}));
-    CheckVkErr(v.queue.waitIdle());
+    if (!SubmitAndWaitForUpload(v.queue, v.device, submit_info, "imgui_texture_upload")) {
+        return;
+    }
 
     v.device.destroyBuffer(upload_buffer, v.allocator);
     v.device.freeMemory(upload_buffer_memory, v.allocator);
@@ -251,6 +285,17 @@ void UploadTextureData::Upload() {
 void UploadTextureData::Destroy() {
     VkData* bd = GetBackendData();
     const InitInfo& v = bd->init_info;
+
+    if (::Vulkan::IsMoltenVkSafeModeEnabled()) {
+        LOG_WARNING(ImGui, "Skipping ImGui texture destruction in MoltenVK safe mode to avoid "
+                           "unbounded device.waitIdle()");
+        RemoveTexture(im_texture);
+        im_texture = nullptr;
+        image_view = VK_NULL_HANDLE;
+        image = VK_NULL_HANDLE;
+        image_memory = VK_NULL_HANDLE;
+        return;
+    }
 
     CheckVkErr(v.device.waitIdle());
     RemoveTexture(im_texture);
@@ -709,6 +754,11 @@ static bool CreateFontsTexture() {
 
     // Destroy existing texture (if any)
     if (bd->font_view || bd->font_image || bd->font_memory || bd->font_texture) {
+        if (::Vulkan::IsMoltenVkSafeModeEnabled()) {
+            LOG_WARNING(ImGui, "Skipping ImGui font texture rebuild in MoltenVK safe mode to avoid "
+                               "unbounded queue.waitIdle()");
+            return false;
+        }
         CheckVkErr(v.queue.waitIdle());
         DestroyFontsTexture();
     }
@@ -880,9 +930,9 @@ static bool CreateFontsTexture() {
     end_info.commandBufferCount = 1;
     end_info.pCommandBuffers = &bd->font_command_buffer;
     CheckVkErr(bd->font_command_buffer.end());
-    CheckVkErr(v.queue.submit({end_info}));
-
-    CheckVkErr(v.queue.waitIdle());
+    if (!SubmitAndWaitForUpload(v.queue, v.device, end_info, "imgui_font_upload")) {
+        return false;
+    }
 
     v.device.destroyBuffer(upload_buffer, v.allocator);
     v.device.freeMemory(upload_buffer_memory, v.allocator);

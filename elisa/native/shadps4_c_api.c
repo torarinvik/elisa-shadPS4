@@ -62,6 +62,13 @@ static void shadps4_elisa_apply_trace_env(int null_fmask_reads, int fmask_decomp
     setenv("SHADPS4_TRACE_INPUT", "1", 1);
     setenv("SHADPS4_TRACE_RENDER", "1", 1);
     setenv("SHADPS4_TRACE_VIDEO_OUT_EVERY", "30", 1);
+    setenv("SHADPS4_GPU_WAIT_TIMEOUT_MS", "2000", 1);
+    setenv("SHADPS4_SKIP_IMGUI_TEXTURE_UPLOADS", "1", 1);
+    setenv("SHADPS4_MOLTENVK_SAFE_MODE", "1", 1);
+    setenv("SHADPS4_FORCE_FIFO_PRESENT", "1", 1);
+    setenv("SHADPS4_TRACE_GPU_COMMANDS", "1", 1);
+    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
+    setenv("MVK_CONFIG_METAL_COMPILE_TIMEOUT", "2000000000", 0);
     unsetenv("SHADPS4_NULL_FMASK_TEXTURE_READS");
     unsetenv("SHADPS4_FMASK_DECOMPRESS_IN_PLACE");
     unsetenv("SHADPS4_COMPOSITOR_NULL_LAYER");

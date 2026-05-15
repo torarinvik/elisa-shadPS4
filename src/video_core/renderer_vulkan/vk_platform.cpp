@@ -14,6 +14,8 @@
 #endif
 
 #include <vector>
+#include <cstdlib>
+#include <cstring>
 #include <fmt/ranges.h>
 
 #include "common/assert.h"
@@ -31,6 +33,51 @@ namespace Vulkan {
 
 static const char* const VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
 static const char* const CRASH_DIAGNOSTIC_LAYER_NAME = "VK_LAYER_LUNARG_crash_diagnostic";
+
+#ifdef __APPLE__
+static bool EnvFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static void SetEnvDefault(const char* name, const char* value) {
+    const char* current = std::getenv(name);
+    if (current == nullptr || current[0] == '\0') {
+        setenv(name, value, false);
+    }
+}
+
+static const char* EnvValueForLog(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' ? value : "<unset>";
+}
+
+static void ApplyMoltenVkSafeModeDefaults() {
+    if (!EnvFlagEnabled("SHADPS4_MOLTENVK_SAFE_MODE")) {
+        LOG_INFO(Render_Vulkan, "MoltenVK safe mode disabled: SHADPS4_MOLTENVK_SAFE_MODE={}",
+                 EnvValueForLog("SHADPS4_MOLTENVK_SAFE_MODE"));
+        return;
+    }
+
+    // Keep the knobs environment-driven so users can bisect individual MoltenVK workarounds.
+    SetEnvDefault("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0");
+    SetEnvDefault("MVK_CONFIG_METAL_COMPILE_TIMEOUT", "2000000000");
+    SetEnvDefault("SHADPS4_FORCE_FIFO_PRESENT", "1");
+    SetEnvDefault("SHADPS4_TRACE_GPU_COMMANDS", "1");
+    LOG_INFO(Render_Vulkan,
+             "Applied MoltenVK safe-mode defaults: async queue submits, finite Metal compile "
+             "timeout, FIFO present, GPU command diagnostics");
+    LOG_INFO(Render_Vulkan,
+             "MoltenVK safe-mode env: SHADPS4_MOLTENVK_SAFE_MODE={} "
+             "MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS={} MVK_CONFIG_METAL_COMPILE_TIMEOUT={} "
+             "SHADPS4_FORCE_FIFO_PRESENT={} SHADPS4_TRACE_GPU_COMMANDS={}",
+             EnvValueForLog("SHADPS4_MOLTENVK_SAFE_MODE"),
+             EnvValueForLog("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS"),
+             EnvValueForLog("MVK_CONFIG_METAL_COMPILE_TIMEOUT"),
+             EnvValueForLog("SHADPS4_FORCE_FIFO_PRESENT"),
+             EnvValueForLog("SHADPS4_TRACE_GPU_COMMANDS"));
+}
+#endif
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(
     vk::DebugUtilsMessageSeverityFlagBitsEXT severity, vk::DebugUtilsMessageTypeFlagsEXT type,
@@ -263,6 +310,8 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     LOG_INFO(Render_Vulkan, "Creating vulkan instance");
 
 #if defined(__APPLE__) && !defined(ENABLE_QT_GUI)
+    ApplyMoltenVkSafeModeDefaults();
+
     // Initialize the environment with the path to the MoltenVK ICD, so that the loader will
     // find it.
     static const auto icd_path = [] {

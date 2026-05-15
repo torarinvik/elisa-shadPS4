@@ -4,12 +4,11 @@
 #include <limits>
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
+#include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 
 #include "common/assert.h"
 
 namespace Vulkan {
-
-constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
 
 MasterSemaphore::MasterSemaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -62,7 +61,21 @@ void MasterSemaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
-    while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
+    const u64 timeout = GpuWaitTimeoutNs();
+    while (true) {
+        const auto result = instance.GetDevice().waitSemaphores(&wait_info, timeout);
+        if (result == vk::Result::eSuccess) {
+            break;
+        }
+        if (result == vk::Result::eTimeout) {
+            LogGpuWaitTimeout("master_semaphore", timeout);
+            LOG_ERROR(Render_Vulkan,
+                      "GPU timeline semaphore timeout: target_tick={} known_gpu_tick={} current_tick={}",
+                      tick, KnownGpuTick(), CurrentTick());
+            continue;
+        }
+        LogGpuWaitFailure("master_semaphore", result);
+        break;
     }
     Refresh();
 }

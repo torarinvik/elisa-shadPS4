@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 #include "video_core/texture_cache/image.h"
 
 #include <algorithm>
@@ -692,13 +693,14 @@ Frame* Presenter::PrepareLastFrame() {
 
     Frame* frame = last_submit_frame;
 
+    const u64 timeout = GpuWaitTimeoutNs();
     while (true) {
-        vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
-                                                               std::numeric_limits<u64>::max());
+        vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false, timeout);
         if (result == vk::Result::eSuccess) {
             break;
         }
         if (result == vk::Result::eTimeout) {
+            LogGpuWaitTimeout("prepare_last_frame_present_done", timeout);
             continue;
         }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
@@ -1224,8 +1226,9 @@ Frame* Presenter::GetRenderFrame() {
     const vk::Device device = instance.GetDevice();
     vk::Result result{};
 
+    const u64 timeout = GpuWaitTimeoutNs();
     const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
+        result = device.waitForFences(frame->present_done, false, timeout);
         return result;
     };
 
@@ -1235,6 +1238,7 @@ Frame* Presenter::GetRenderFrame() {
                    "Device lost during waiting for a frame");
         // Retry if the waiting times out
         if (result == vk::Result::eTimeout) {
+            LogGpuWaitTimeout("get_render_frame_present_done", timeout);
             continue;
         }
     }

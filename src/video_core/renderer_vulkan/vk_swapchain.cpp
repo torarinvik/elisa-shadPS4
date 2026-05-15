@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -10,8 +12,14 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
+#include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 
 namespace Vulkan {
+
+static bool EnvFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
 
 static constexpr vk::SurfaceFormatKHR SURFACE_FORMAT_HDR = {
     .format = vk::Format::eA2B10G10R10UnormPack32,
@@ -104,12 +112,18 @@ void Swapchain::SetHDR(bool hdr) {
 
 bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
-    vk::Result result =
-        device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
-                                   image_acquired[frame_index], VK_NULL_HANDLE, &image_index);
+    const u64 timeout = GpuWaitTimeoutNs();
+    RecordGpuCommandDiagnostic("swapchain_acquire frame_index=%u image_count=%u", frame_index,
+                               image_count);
+    vk::Result result = device.acquireNextImageKHR(swapchain, timeout, image_acquired[frame_index],
+                                                   VK_NULL_HANDLE, &image_index);
 
     switch (result) {
     case vk::Result::eSuccess:
+        break;
+    case vk::Result::eTimeout:
+        LogGpuWaitTimeout("swapchain_acquire_next_image", timeout);
+        needs_recreation = true;
         break;
     case vk::Result::eSuboptimalKHR:
     case vk::Result::eErrorSurfaceLostKHR:
@@ -137,12 +151,17 @@ bool Swapchain::Present() {
         .pImageIndices = &image_index,
     };
 
+    RecordGpuCommandDiagnostic("swapchain_present_begin frame_index=%u image_index=%u", frame_index,
+                               image_index);
     auto result = instance.GetPresentQueue().presentKHR(present_info);
+    RecordGpuCommandDiagnostic("swapchain_present frame_index=%u image_index=%u result=%s",
+                               frame_index, image_index, vk::to_string(result).c_str());
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         needs_recreation = true;
+    } else if (result != vk::Result::eSuccess) {
+        LogGpuWaitFailure("swapchain_present", result);
+        needs_recreation = true;
     } else {
-        ASSERT_MSG(result == vk::Result::eSuccess, "Swapchain presentation failed: {}",
-                   vk::to_string(result));
     }
 
     frame_index = (frame_index + 1) % image_count;
@@ -200,7 +219,10 @@ void Swapchain::FindPresentMode() {
     }
 
     const auto requested_mode = EmulatorSettings.GetPresentMode();
-    if (requested_mode == "Mailbox") {
+    if (IsMoltenVkSafeModeEnabled() || EnvFlagEnabled("SHADPS4_FORCE_FIFO_PRESENT")) {
+        LOG_INFO(Render_Vulkan, "Forcing FIFO present mode for macOS/MoltenVK safe profile");
+        present_mode = vk::PresentModeKHR::eFifo;
+    } else if (requested_mode == "Mailbox") {
         present_mode = vk::PresentModeKHR::eMailbox;
     } else if (requested_mode == "Fifo") {
         present_mode = vk::PresentModeKHR::eFifo;
@@ -219,6 +241,7 @@ void Swapchain::FindPresentMode() {
                     vk::to_string(present_mode), vk::to_string(fallback));
         present_mode = fallback;
     }
+    LOG_INFO(Render_Vulkan, "Selected Vulkan present mode: {}", vk::to_string(present_mode));
 }
 
 void Swapchain::SetSurfaceProperties() {

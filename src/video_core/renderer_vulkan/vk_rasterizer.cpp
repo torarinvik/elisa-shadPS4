@@ -8,6 +8,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_gpu_command_diagnostics.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -350,9 +351,16 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
     if (is_indexed) {
+        RecordGpuCommandDiagnostic(
+            "draw_indexed num_indices=%u instances=%u vertex_offset=%u instance_offset=%u",
+            regs.num_indices, regs.num_instances.NumInstances(), vertex_offset, instance_offset);
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
                            s32(vertex_offset), instance_offset);
     } else {
+        RecordGpuCommandDiagnostic("draw num_vertices=%u instances=%u vertex_offset=%u "
+                                   "instance_offset=%u",
+                                   regs.num_indices, regs.num_instances.NumInstances(),
+                                   vertex_offset, instance_offset);
         cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
@@ -409,18 +417,33 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
 
         if (count_address != 0) {
+            RecordGpuCommandDiagnostic("draw_indexed_indirect_count arg=0x%llx offset=%u stride=%u "
+                                       "max_count=%u count=0x%llx",
+                                       static_cast<unsigned long long>(arg_address), offset, stride,
+                                       max_count, static_cast<unsigned long long>(count_address));
             cmdbuf.drawIndexedIndirectCount(buffer->Handle(), base, count_buffer->Handle(),
                                             count_base, max_count, stride);
         } else {
+            RecordGpuCommandDiagnostic("draw_indexed_indirect arg=0x%llx offset=%u stride=%u "
+                                       "max_count=%u",
+                                       static_cast<unsigned long long>(arg_address), offset, stride,
+                                       max_count);
             cmdbuf.drawIndexedIndirect(buffer->Handle(), base, max_count, stride);
         }
     } else {
         ASSERT(sizeof(VkDrawIndirectCommand) == stride);
 
         if (count_address != 0) {
+            RecordGpuCommandDiagnostic("draw_indirect_count arg=0x%llx offset=%u stride=%u "
+                                       "max_count=%u count=0x%llx",
+                                       static_cast<unsigned long long>(arg_address), offset, stride,
+                                       max_count, static_cast<unsigned long long>(count_address));
             cmdbuf.drawIndirectCount(buffer->Handle(), base, count_buffer->Handle(), count_base,
                                      max_count, stride);
         } else {
+            RecordGpuCommandDiagnostic("draw_indirect arg=0x%llx offset=%u stride=%u max_count=%u",
+                                       static_cast<unsigned long long>(arg_address), offset, stride,
+                                       max_count);
             cmdbuf.drawIndirect(buffer->Handle(), base, max_count, stride);
         }
     }
@@ -453,6 +476,8 @@ void Rasterizer::DispatchDirect() {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    RecordGpuCommandDiagnostic("dispatch x=%u y=%u z=%u", cs_program.dim_x, cs_program.dim_y,
+                               cs_program.dim_z);
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
 
     ResetBindings();

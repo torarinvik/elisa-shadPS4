@@ -103,6 +103,14 @@ struct RenderCheckpoint:
     suspicious_score: mutable i64
     first_suspicious_pass: mutable i64
 
+struct FmaskRisk:
+    score: i64
+    level: i64
+    label: cstr
+    reason: cstr
+    recommended_profile: TraceProfile
+    avoid_long_run: bool
+
 def metadata_kind_unknown() -> i64:
     return 0
 
@@ -138,6 +146,15 @@ def render_format_rg16_sfloat() -> i64:
 
 def render_format_r32_sfloat() -> i64:
     return 7
+
+def fmask_risk_low() -> i64:
+    return 0
+
+def fmask_risk_medium() -> i64:
+    return 1
+
+def fmask_risk_high() -> i64:
+    return 2
 
 def ufc1_game_id() -> GameId:
     return GameId("CUSA00264")
@@ -409,6 +426,45 @@ def ufc_trace_analyze_text(log_text: cstr) -> RenderCheckpoint:
         index <- index + 1
     return summary
 
+def ufc_trace_recommended_profile(summary: RenderCheckpoint) -> TraceProfile:
+    if summary.null_metadata_action_count > 0 or summary.metadata_read_hits_last_fmask_count > 0:
+        return fmask_null_read_profile()
+    if summary.fmask_decompress_missing_mrt1_count > 0 or summary.fmask_decompress_count > 0:
+        return fmask_in_place_profile()
+    if summary.compositor_null_layer_count > 0 or summary.image_binding_null_count > 0:
+        return compositor_null_layer_profile()
+    return baseline_safe_profile()
+
+def ufc_trace_fmask_risk(summary: RenderCheckpoint) -> FmaskRisk:
+    score: mutable i64 = summary.suspicious_score
+    reason: mutable cstr = "no suspicious FMASK-adjacent trace signals"
+    if summary.metadata_read_hits_last_fmask_count > 0:
+        score <- score + 2
+        reason <- "metadata reads hit the latest FMASK address"
+    if summary.null_metadata_action_count > 0:
+        score <- score + 2
+        reason <- "metadata texture read was nulled near the render path"
+    if summary.fmask_cmask_alias_count > 0:
+        score <- score + 3
+        reason <- "render target reports aliased FMASK and CMASK addresses"
+    if summary.fmask_decompress_missing_mrt1_count > 0:
+        score <- score + 2
+        reason <- "FMASK decompress was missing MRT1"
+    if summary.compositor_null_layer_count > 0:
+        score <- score + 2
+        reason <- "compositor layer was nulled"
+    if summary.image_binding_null_count > 0:
+        score <- score + 1
+        reason <- "image binding became null near videoout"
+    if summary.fmask_texture_read_count > 0 and summary.fmask_decompress_count == 0:
+        score <- score + 1
+        reason <- "FMASK metadata was sampled without a recorded decompress"
+    if score >= 6:
+        return FmaskRisk(score, fmask_risk_high(), "high", reason, ufc_trace_recommended_profile(summary), true)
+    if score >= 2:
+        return FmaskRisk(score, fmask_risk_medium(), "medium", reason, ufc_trace_recommended_profile(summary), true)
+    return FmaskRisk(score, fmask_risk_low(), "low", reason, ufc_trace_recommended_profile(summary), false)
+
 def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
     game: GameId = ufc1_game_id()
     log_path_buffer: mutable u8[1024] = zeroed
@@ -454,6 +510,7 @@ def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[FS.Read, Sys.F
     return TraceResult(true, run, summary, native_error)
 
 def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
+    risk: FmaskRisk = ufc_trace_fmask_risk(result.render)
     can Console.Write:
         trusted Unsafe.RawExtern:
             printf("profile=%s\n", result.run.profile.name)
@@ -474,3 +531,4 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("metadata_reads_by_kind fmask=%lld cmask=%lld htile=%lld unknown=%lld\n", result.render.fmask_texture_read_count, result.render.cmask_texture_read_count, result.render.htile_texture_read_count, result.render.unknown_metadata_read_count)
             printf("metadata_actions null=%lld sample=%lld last_read_addr=0x%llx last_read_kind=%lld\n", result.render.null_metadata_action_count, result.render.sample_metadata_action_count, result.render.last_metadata_read_addr, result.render.last_metadata_read_kind)
             printf("metadata_hits last_fmask=%lld last_cmask=%lld last_htile=%lld fmask_cmask_aliases=%lld\n", result.render.metadata_read_hits_last_fmask_count, result.render.metadata_read_hits_last_cmask_count, result.render.metadata_read_hits_last_htile_count, result.render.fmask_cmask_alias_count)
+            printf("fmask_risk score=%lld level=%s avoid_long_run=%d recommended_profile=%s reason=%s\n", risk.score, risk.label, 1 if risk.avoid_long_run else 0, risk.recommended_profile.name, risk.reason)

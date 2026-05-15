@@ -52,10 +52,29 @@ constructs a `TraceProfile` with explicit booleans such as `null_fmask_reads`,
 `fmask_decompress_in_place`, `compositor_null_layer`, and `videoout_unorm`; C only applies those
 flags while spawning the child process. This keeps the unsafe boundary boring and inspectable.
 
+Safe trace launches also set:
+
+- `SHADPS4_GPU_WAIT_TIMEOUT_MS=2000`
+- `SHADPS4_SKIP_IMGUI_TEXTURE_UPLOADS=1`
+- `SHADPS4_MOLTENVK_SAFE_MODE=1`
+- `SHADPS4_FORCE_FIFO_PRESENT=1`
+- `SHADPS4_TRACE_GPU_COMMANDS=1`
+
+The wait timeout keeps Vulkan waits waking up to emit diagnostics instead of sleeping forever. The
+ImGui flag avoids the known runtime texture-upload path that can submit and wait for the queue while
+scheduler submission is locked. The MoltenVK safe mode applies conservative macOS defaults before
+Vulkan instance creation: asynchronous MoltenVK queue-submit processing, finite Metal compile
+timeout, FIFO present mode, and a last-64 GPU command ring that is dumped on wait/present failures.
+
 The parser also classifies metadata trace lines in Elisa. Current summaries include FMASK/CMASK/
 HTILE read counts, null-vs-sample metadata actions, whether metadata reads hit the last render
 metadata addresses, whether render targets reported aliased FMASK/CMASK addresses, image-binding
 texture/storage/videoout-storage counts, last bound image metadata, last pipeline hashes, and a small
 black-screen-adjacent suspicious score.
+
+`ufc_trace_fmask_risk(summary)` turns those parsed facts into an Elisa-owned investigation decision:
+low/medium/high risk, a human-readable reason, whether long automated runs should be avoided, and
+the next safest experiment profile to try. This keeps FMASK triage policy outside the live C++
+renderer path while still making it testable against fixture logs.
 
 Safety rule: do not use this harness for long black-screen repro loops yet. It is intentionally an observability and process-control slice, not a renderer/FMASK behavior change.

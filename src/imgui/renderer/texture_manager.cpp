@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <deque>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #include <imgui.h>
@@ -17,6 +19,11 @@
 namespace ImGui {
 
 namespace Core::TextureManager {
+
+static bool ShouldSkipTextureUploads() {
+    const char* value = std::getenv("SHADPS4_SKIP_IMGUI_TEXTURE_UPLOADS");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
 struct Inner {
     std::atomic_int count = 0;
     ImTextureID texture_id = nullptr;
@@ -191,8 +198,8 @@ void WorkerLoop() {
 
 void StartWorker() {
     ASSERT(!g_is_worker_running);
-    g_worker_thread = std::jthread(WorkerLoop);
     g_is_worker_running = true;
+    g_worker_thread = std::jthread(WorkerLoop);
 }
 
 void StopWorker() {
@@ -224,6 +231,9 @@ void DecodePngFile(std::filesystem::path path, Inner* core) {
 }
 
 void Submit() {
+    if (ShouldSkipTextureUploads()) {
+        return;
+    }
     UploadJob upload;
     {
         std::unique_lock lk{g_upload_mtx};

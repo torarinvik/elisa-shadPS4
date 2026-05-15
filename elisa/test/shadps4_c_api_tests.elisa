@@ -104,6 +104,15 @@ def ufc_trace_parser_summarizes_render_checkpoints() -> void can[Abort.Panic]:
             panic("expected no fmask/cmask alias in fixture")
         if summary.suspicious_score != 0:
             panic("expected no suspicious score in baseline fixture")
+        risk: FmaskRisk = ufc_trace_fmask_risk(summary)
+        if risk.level != fmask_risk_medium():
+            panic("expected baseline fixture to be medium risk because fmask is sampled")
+        if risk.score != 2:
+            panic("expected baseline fixture risk score")
+        if risk.recommended_profile.name != fmask_null_read_profile().name:
+            panic("expected fmask null-read recommendation")
+        if not risk.avoid_long_run:
+            panic("expected medium-risk trace to avoid long automated runs")
 
 
 @test
@@ -128,6 +137,46 @@ def ufc_trace_parser_marks_black_screen_adjacent_suspicion() -> void can[Abort.P
             panic("expected first suspicious pass")
         if summary.suspicious_score < 5:
             panic("expected multiple suspicious signals")
+        risk: FmaskRisk = ufc_trace_fmask_risk(summary)
+        if risk.level != fmask_risk_high():
+            panic("expected high fmask risk")
+        if risk.score < 10:
+            panic("expected high fmask risk score")
+        if risk.recommended_profile.name != fmask_null_read_profile().name:
+            panic("expected fmask null-read recommendation for metadata hit")
+        if not risk.avoid_long_run:
+            panic("expected high-risk trace to avoid long automated runs")
+
+
+@test
+def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        decompress_summary: mutable RenderCheckpoint = empty_checkpoint()
+        decompress_summary.fmask_decompress_missing_mrt1_count <- 1
+        decompress_summary.suspicious_score <- 1
+        decompress_risk: FmaskRisk = ufc_trace_fmask_risk(decompress_summary)
+        if decompress_risk.level != fmask_risk_medium():
+            panic("expected decompress-only risk to be medium")
+        if decompress_risk.recommended_profile.name != fmask_in_place_profile().name:
+            panic("expected fmask in-place recommendation")
+
+        compositor_summary: mutable RenderCheckpoint = empty_checkpoint()
+        compositor_summary.compositor_null_layer_count <- 1
+        compositor_risk: FmaskRisk = ufc_trace_fmask_risk(compositor_summary)
+        if compositor_risk.level != fmask_risk_medium():
+            panic("expected compositor-only risk to be medium")
+        if compositor_risk.recommended_profile.name != compositor_null_layer_profile().name:
+            panic("expected compositor null-layer recommendation")
+
+        mixed_summary: mutable RenderCheckpoint = empty_checkpoint()
+        mixed_summary.metadata_read_hits_last_fmask_count <- 1
+        mixed_summary.fmask_decompress_missing_mrt1_count <- 1
+        mixed_summary.compositor_null_layer_count <- 1
+        mixed_risk: FmaskRisk = ufc_trace_fmask_risk(mixed_summary)
+        if mixed_risk.level != fmask_risk_high():
+            panic("expected mixed risk to be high")
+        if mixed_risk.recommended_profile.name != fmask_null_read_profile().name:
+            panic("expected metadata-hit recommendation to take priority")
 
 
 @test
@@ -183,3 +232,10 @@ def ufc_trace_parser_handles_empty_logs() -> void can[Abort.Panic]:
             panic("expected missing videoout stage")
         if summary.last_metadata_read_addr != -1:
             panic("expected missing metadata read address")
+        risk: FmaskRisk = ufc_trace_fmask_risk(summary)
+        if risk.level != fmask_risk_low():
+            panic("expected empty log to be low risk")
+        if risk.score != 0:
+            panic("expected empty log risk score")
+        if risk.avoid_long_run:
+            panic("expected empty log not to request long-run avoidance")
