@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
+#include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
 #ifdef ARCH_X86_64
@@ -84,6 +85,11 @@ static bool TraceSignalFaults() {
     return enabled;
 }
 
+static bool TraceSignalSymbols() {
+    static const bool enabled = std::getenv("SHADPS4_TRACE_SIGNAL_SYMBOLS") != nullptr;
+    return enabled;
+}
+
 static void TraceSignalFault(int sig, void* raw_context, void* fault_address) {
     if (!TraceSignalFaults()) {
         return;
@@ -93,6 +99,25 @@ static void TraceSignalFault(int sig, void* raw_context, void* fault_address) {
         buffer, sizeof(buffer),
         "TRACE_SIGNAL_FAULT sig=%d rip=%p fault=%p is_write=%d\n", sig,
         Common::GetRip(raw_context), fault_address, Common::IsWriteError(raw_context) ? 1 : 0);
+    if (len > 0) {
+        const auto size = static_cast<size_t>(std::min(len, static_cast<int>(sizeof(buffer) - 1)));
+        write(STDERR_FILENO, buffer, size);
+    }
+}
+
+static void TraceSignalSymbol(void* code_address) {
+    if (!TraceSignalSymbols()) {
+        return;
+    }
+    Dl_info info{};
+    const int ok = dladdr(code_address, &info);
+    char buffer[1024];
+    const auto len = std::snprintf(
+        buffer, sizeof(buffer),
+        "TRACE_SIGNAL_SYMBOL rip=%p image=%s image_base=%p symbol=%s symbol_addr=%p\n",
+        code_address, ok && info.dli_fname ? info.dli_fname : "<unknown>",
+        ok ? info.dli_fbase : nullptr, ok && info.dli_sname ? info.dli_sname : "<unknown>",
+        ok ? info.dli_saddr : nullptr);
     if (len > 0) {
         const auto size = static_cast<size_t>(std::min(len, static_cast<int>(sizeof(buffer) - 1)));
         write(STDERR_FILENO, buffer, size);
@@ -110,6 +135,7 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
         TraceSignalFault(sig, raw_context, info->si_addr);
         const bool is_write = Common::IsWriteError(raw_context);
         if (!signals->DispatchAccessViolation(raw_context, info->si_addr)) {
+            TraceSignalSymbol(code_address);
             // If the guest has installed a custom signal handler, and the access violation didn't
             // come from HLE memory tracking, pass the signal on
             if (Libraries::Kernel::Handlers[Libraries::Kernel::NativeToOrbisSignal(sig)]) {

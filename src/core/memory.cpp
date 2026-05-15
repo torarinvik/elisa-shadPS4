@@ -526,7 +526,7 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
                   "Out of flexible memory, available flexible memory = {:#x}"
                   " requested size = {:#x}",
                   total_flexible_size - flexible_usage, size);
-        return ORBIS_KERNEL_ERROR_EINVAL;
+        return ORBIS_KERNEL_ERROR_ENOMEM;
     }
     std::scoped_lock lk{unmap_mutex};
 
@@ -874,8 +874,11 @@ s32 MemoryManager::UnmapMemory(VAddr virtual_addr, u64 size) {
     // Align address and size appropriately
     virtual_addr = Common::AlignDown(virtual_addr, 16_KB);
     size = Common::AlignUp(size, 16_KB);
-    ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
-               virtual_addr);
+    if (!IsValidMapping(virtual_addr, size)) {
+        LOG_ERROR(Kernel_Vmm, "Attempted to unmap invalid address range: addr = {:#x}, size = {:#x}",
+                  virtual_addr, size);
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
 
     // If the requested range has GPU access, unmap from GPU.
     if (IsValidGpuMapping(virtual_addr, size)) {

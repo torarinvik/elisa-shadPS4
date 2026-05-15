@@ -314,7 +314,11 @@ s32 PS4_SYSV_ABI sceKernelMapNamedFlexibleMemory(void** addr_in_out, u64 len, s3
     auto* memory = Core::Memory::Instance();
     const auto ret = memory->MapMemory(addr_in_out, in_addr, len, mem_prot, map_flags,
                                        Core::VMAType::Flexible, name);
-    LOG_INFO(Kernel_Vmm, "out_addr = {}", fmt::ptr(*addr_in_out));
+    if (ret == ORBIS_OK) {
+        LOG_INFO(Kernel_Vmm, "out_addr = {}", fmt::ptr(*addr_in_out));
+    } else {
+        LOG_ERROR(Kernel_Vmm, "sceKernelMapNamedFlexibleMemory failed with {:#x}", ret);
+    }
     return ret;
 }
 
@@ -762,6 +766,11 @@ s32 PS4_SYSV_ABI sceKernelConfiguredFlexibleMemorySize(u64* sizeOut) {
 s32 PS4_SYSV_ABI sceKernelMunmap(void* addr, u64 len) {
     LOG_INFO(Kernel_Vmm, "addr = {}, len = {:#x}", fmt::ptr(addr), len);
     if (len == 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    if (addr == nullptr || !Common::Is16KBAligned(std::bit_cast<u64>(addr)) ||
+        !Common::Is16KBAligned(len)) {
+        LOG_ERROR(Kernel_Vmm, "Invalid munmap range: addr = {}, len = {:#x}", fmt::ptr(addr), len);
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     auto* memory = Core::Memory::Instance();
