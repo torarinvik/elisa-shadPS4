@@ -35,6 +35,12 @@ static bool IsStrictRenderValidationEnabled() {
     return enabled;
 }
 
+static bool ShouldAbortMetadataTextureRead() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_METADATA_TEXTURE_READ_ABORT");
+    return IsStrictRenderValidationEnabled() && enabled;
+}
+
 static bool IsFmaskDecompressResolveEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_FMASK_DECOMPRESS_AS_RESOLVE");
@@ -838,11 +844,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 (IsNullFmaskTextureReadEnabled() || IsStrictRenderValidationEnabled()) && meta &&
                 meta->type == VideoCore::TextureCache::MetaDataInfo::Type::FMask &&
                 !image_desc.is_written;
-            const bool null_meta_read = !null_fmask_read && IsNullMetaTextureReadEnabled() &&
-                                        !image_desc.is_written;
+            const bool null_meta_read =
+                !null_fmask_read &&
+                (IsNullMetaTextureReadEnabled() || IsStrictRenderValidationEnabled()) &&
+                !image_desc.is_written;
             const char* action =
                 null_fmask_read ? "null_fmask_texture"
-                                : null_meta_read ? "null_descriptor" : "sample_metadata";
+                                : null_meta_read ? "null_metadata_texture" : "sample_metadata";
             if (IsTraceRenderEnabled()) {
                 static std::atomic<u64> metadata_texture_read_count{};
                 const u64 count =
@@ -891,7 +899,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
             } else {
                 LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
             }
-            ASSERT_MSG(!IsStrictRenderValidationEnabled() || null_fmask_read || null_meta_read,
+            ASSERT_MSG(!ShouldAbortMetadataTextureRead() || null_fmask_read || null_meta_read,
                        "Strict render validation: shader samples metadata texture addr={:#x} "
                        "kind={} action={} stage={} pgm={:#x} data_fmt={} num_fmt={} type={} "
                        "width={} height={} depth={} pitch={} mips={} is_written={}",
@@ -903,12 +911,21 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                        image_desc.is_written);
             if (null_fmask_read) {
                 VideoCore::TextureCache::ImageDesc desc{tsharp, image_desc};
+                desc.view_info.range.base.level = 0;
+                desc.view_info.range.base.layer = 0;
+                desc.view_info.range.extent.levels = 1;
+                desc.view_info.range.extent.layers = 1;
                 image_bindings.emplace_back(texture_cache.GetNullImage(desc.info.pixel_format), desc);
                 image_descriptor_array_sizes.push_back(1);
                 continue;
             }
             if (null_meta_read) {
-                image_bindings.emplace_back(std::piecewise_construct, std::tuple{}, std::tuple{});
+                VideoCore::TextureCache::ImageDesc desc{tsharp, image_desc};
+                desc.view_info.range.base.level = 0;
+                desc.view_info.range.base.layer = 0;
+                desc.view_info.range.extent.levels = 1;
+                desc.view_info.range.extent.layers = 1;
+                image_bindings.emplace_back(texture_cache.GetNullImage(desc.info.pixel_format), desc);
                 image_descriptor_array_sizes.push_back(1);
                 continue;
             }

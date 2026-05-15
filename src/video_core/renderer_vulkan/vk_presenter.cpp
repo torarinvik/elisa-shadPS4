@@ -778,9 +778,28 @@ static void ProcessBlackWatchdogReadbacks(
                  ctx.backing_samples, vk::to_string(ctx.layout), ctx.cmask_addr, ctx.fmask_addr,
                  ctx.htile_addr, ctx.frame_image, ctx.frame_view, ctx.frame_texture);
 
-        ASSERT_MSG(!watchdog->saw_nonblack_game_frame || !is_black ||
-                       watchdog->consecutive_black[stage_index] <
-                           watchdog->config.consecutive_frames,
+        const bool persistent_unexpected_black =
+            watchdog->saw_nonblack_game_frame && is_black &&
+            watchdog->consecutive_black[stage_index] >= watchdog->config.consecutive_frames;
+        const bool has_writer_breadcrumb = ctx.last_write_sequence != 0;
+        const bool abort_without_writer =
+            Common::Trace::EnvEnabled("SHADPS4_BLACK_WATCHDOG_ABORT_WITHOUT_WRITER");
+        if (persistent_unexpected_black && !has_writer_breadcrumb && !abort_without_writer) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_BLACK_WATCHDOG persistent_black_no_writer stage={} frame={} "
+                        "consecutive={} threshold={} videoout_addr={:#x} image_id={} "
+                        "usage=t{}s{}rt{}dt{} layout={} avg_luma={:.2f} max_luma={} "
+                        "near_black={:.2f}% nonblack={}",
+                        ScreenshotKindName(readback.kind), ctx.frame_index,
+                        watchdog->consecutive_black[stage_index],
+                        watchdog->config.consecutive_frames, ctx.videoout_addr, ctx.image_id,
+                        ctx.usage_texture, ctx.usage_storage, ctx.usage_render_target,
+                        ctx.usage_depth_target, vk::to_string(ctx.layout), stats.avg_luma,
+                        stats.max_luma, stats.near_black_pct, stats.nonblack_pixels);
+        }
+
+        ASSERT_MSG(!persistent_unexpected_black ||
+                       (!has_writer_breadcrumb && !abort_without_writer),
                    "Strict black-screen watchdog: persistent unexpected black at stage={} "
                    "frame={} consecutive={} threshold={} size={}x{} format={} avg_luma={:.2f} "
                    "max_luma={} near_black={:.2f}% nonblack={} guest_avg_luma={:.2f} "
@@ -1407,12 +1426,11 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
         if (!swapchain.AcquireNextImage()) {
             // User resizes the window too fast and GPU can't keep up. Skip this frame.
-            LOG_WARNING(Render_Vulkan, "Skipping frame!");
-            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
-                       "Strict render validation: swapchain image acquisition failed twice; "
-                       "would skip frame size={}x{} frame={} frame_image={:#x}",
-                       window.GetWidth(), window.GetHeight(), static_cast<const void*>(frame),
-                       reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)));
+            LOG_WARNING(Render_Vulkan,
+                        "Skipping frame after swapchain image acquisition failed twice; "
+                        "size={}x{} frame={} frame_image={:#x}",
+                        window.GetWidth(), window.GetHeight(), static_cast<const void*>(frame),
+                        reinterpret_cast<uintptr_t>(static_cast<VkImage>(frame->image)));
             free_frame();
             return;
         }

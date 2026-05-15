@@ -21,6 +21,12 @@ static bool IsStrictRenderValidationEnabled() {
     return enabled;
 }
 
+static bool ShouldAbortCopyLayerCoercion() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_COPY_LAYER_COERCION_ABORT");
+    return IsStrictRenderValidationEnabled() && enabled;
+}
+
 static vk::ImageUsageFlags ImageUsageFlags(const Vulkan::Instance* instance,
                                            const ImageInfo& info) {
     vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eTransferSrc |
@@ -34,10 +40,12 @@ static vk::ImageUsageFlags ImageUsageFlags(const Vulkan::Instance* instance,
             if (instance->IsAttachmentFeedbackLoopLayoutSupported()) {
                 usage |= vk::ImageUsageFlagBits::eAttachmentFeedbackLoopEXT;
             }
-            // Always create images with storage flag to avoid needing re-creation in case of e.g
-            // compute clears This sacrifices a bit of performance but is less work. ExtendedUsage
-            // flag is also used.
-            usage |= vk::ImageUsageFlagBits::eStorage;
+            // Prefer storage-capable images to avoid re-creation in case of e.g. compute clears,
+            // but some color formats are not valid storage images on MoltenVK.
+            if (instance->IsFormatSupported(info.pixel_format,
+                                            vk::FormatFeatureFlagBits2::eStorageImage)) {
+                usage |= vk::ImageUsageFlagBits::eStorage;
+            }
         }
     }
 
@@ -493,7 +501,7 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
     // 3D images can only use 1 layer.
     if (vk_src_type == vk::ImageType::e3D && src_layers != 1) {
         LOG_WARNING(Render_Vulkan, "Coercing copy 3D source layers {} to 1.", src_layers);
-        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+        ASSERT_MSG(!ShouldAbortCopyLayerCoercion(),
                    "Strict render validation: coercing 3D source copy layers from {} to 1 "
                    "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
                    src_layers, src_info.guest_address, src_info.guest_size, dst_info.guest_address,
@@ -502,7 +510,7 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
     }
     if (vk_dst_type == vk::ImageType::e3D && dst_layers != 1) {
         LOG_WARNING(Render_Vulkan, "Coercing copy 3D destination layers {} to 1.", dst_layers);
-        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+        ASSERT_MSG(!ShouldAbortCopyLayerCoercion(),
                    "Strict render validation: coercing 3D destination copy layers from {} to 1 "
                    "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
                    dst_layers, src_info.guest_address, src_info.guest_size,
@@ -516,7 +524,7 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
             LOG_WARNING(Render_Vulkan,
                         "Coercing copy source layers {} and destination layers {} to minimum.",
                         src_layers, dst_layers);
-            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+            ASSERT_MSG(!ShouldAbortCopyLayerCoercion(),
                        "Strict render validation: coercing copy layers from src={} dst={} "
                        "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
                        src_layers, dst_layers, src_info.guest_address, src_info.guest_size,
@@ -530,7 +538,7 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
             LOG_WARNING(Render_Vulkan,
                         "Coercing copy 2D source layers {} to 3D destination depth {}", src_layers,
                         depth);
-            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+            ASSERT_MSG(!ShouldAbortCopyLayerCoercion(),
                        "Strict render validation: coercing 2D source copy layers {} to 3D depth {} "
                        "src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
                        src_layers, depth, src_info.guest_address, src_info.guest_size,
@@ -542,7 +550,7 @@ static std::pair<u32, u32> SanitizeCopyLayers(const ImageInfo& src_info, const I
             LOG_WARNING(Render_Vulkan,
                         "Coercing copy 2D destination layers {} to 3D source depth {}", dst_layers,
                         depth);
-            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+            ASSERT_MSG(!ShouldAbortCopyLayerCoercion(),
                        "Strict render validation: coercing 2D destination copy layers {} to 3D "
                        "depth {} src_addr={:#x} src_size={} dst_addr={:#x} dst_size={}",
                        dst_layers, depth, src_info.guest_address, src_info.guest_size,

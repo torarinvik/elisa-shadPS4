@@ -12,6 +12,9 @@
 #include "input/controller.h"
 #include "pad.h"
 
+#include <cstdlib>
+#include <string_view>
+
 namespace Libraries::Pad {
 
 using Input::GameController;
@@ -38,6 +41,11 @@ static bool g_initialized = false;
 static u64 pad_handle_counter = 1;
 static std::unordered_map<HandleKey, s32, HandleKeyHash> pad_handle_map{};
 static std::unordered_map<s32, GameController*> handle_to_controller_map{};
+
+static bool IsTraceInputEnabled() {
+    const char* value = std::getenv("SHADPS4_TRACE_INPUT");
+    return value != nullptr && value[0] != '\0' && std::string_view{value} != "0";
+}
 
 int PS4_SYSV_ABI scePadClose(s32 handle) {
     LOG_WARNING(Lib_Pad, "called, handle: {}", handle);
@@ -481,6 +489,15 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
         pData[i].timestamp = states[i].time;
         pData[i].connectedCount = connected_count;
         pData[i].deviceUniqueDataLen = 0;
+        if (IsTraceInputEnabled() &&
+            (pData[i].buttons != OrbisPadButtonDataOffset::None || gamepad_input_intercepted)) {
+            LOG_INFO(Lib_Pad,
+                     "TRACE_PAD_READ sample handle={} index={} buttons=0x{:08x} connected={} "
+                     "connected_count={} intercepted={} left=({}, {}) right=({}, {})",
+                     handle, i, static_cast<u32>(pData[i].buttons), pData[i].connected,
+                     pData[i].connectedCount, gamepad_input_intercepted, pData[i].leftStick.x,
+                     pData[i].leftStick.y, pData[i].rightStick.x, pData[i].rightStick.y);
+        }
     }
 
     return num;
@@ -488,6 +505,7 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
 
 int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
     LOG_TRACE(Lib_Pad, "called");
+    static u64 trace_read_count = 0;
     int connected_count = 0;
     bool connected = false;
     std::vector<Input::State> states(64);
@@ -497,6 +515,15 @@ int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
     }
     auto& controller = *it->second;
     int ret_num = controller.ReadStates(states.data(), num, &connected, &connected_count);
+    if (IsTraceInputEnabled()) {
+        ++trace_read_count;
+        if (ret_num > 0 || (trace_read_count % 120) == 0) {
+            LOG_INFO(Lib_Pad,
+                     "TRACE_PAD_READ call=scePadRead handle={} requested={} queued_return={} "
+                     "connected={} connected_count={}",
+                     handle, num, ret_num, connected, connected_count);
+        }
+    }
     return ProcessStates(handle, pData, controller, states.data(), ret_num, connected,
                          connected_count);
 }
@@ -532,6 +559,12 @@ int PS4_SYSV_ABI scePadReadState(s32 handle, OrbisPadData* pData) {
     bool connected = false;
     Input::State state;
     controller.ReadState(&state, &connected, &connected_count);
+    if (IsTraceInputEnabled() && state.buttonsState != OrbisPadButtonDataOffset::None) {
+        LOG_INFO(Lib_Pad,
+                 "TRACE_PAD_READ call=scePadReadState handle={} buttons=0x{:08x} connected={} "
+                 "connected_count={}",
+                 handle, static_cast<u32>(state.buttonsState), connected, connected_count);
+    }
     ProcessStates(handle, pData, controller, &state, 1, connected, connected_count);
     return ORBIS_OK;
 }

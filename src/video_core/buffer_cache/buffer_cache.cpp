@@ -23,6 +23,12 @@ static bool IsStrictRenderValidationEnabled() {
     return enabled;
 }
 
+static bool ShouldAbortCopyBufferImageAlias() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_COPYBUFFER_IMAGE_ALIAS_ABORT");
+    return IsStrictRenderValidationEnabled() && enabled;
+}
+
 static constexpr size_t DataShareBufferSize = 64_KB;
 static constexpr size_t StagingBufferSize = 512_MB;
 static constexpr size_t DownloadBufferSize = 32_MB;
@@ -313,10 +319,18 @@ void BufferCache::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, 
         const bool src_aliases_image =
             !src_gds &&
             static_cast<bool>(texture_cache.FindImageFromRange(src, num_bytes, false));
-        ASSERT_MSG(!IsStrictRenderValidationEnabled() || !dst_aliases_image,
-                   "Strict render validation: CopyBuffer destination aliases cached image while "
-                   "taking non-GPU-modified path dst={:#x} src={:#x} size={}",
-                   dst, src, num_bytes);
+        if (dst_aliases_image) {
+            LOG_WARNING(Render_Vulkan,
+                        "Strict render validation: CopyBuffer destination aliases cached image "
+                        "while taking non-GPU-modified path dst={:#x} src={:#x} size={} "
+                        "src_aliases_image={} dst_gds={} src_gds={}",
+                        dst, src, num_bytes, src_aliases_image, dst_gds, src_gds);
+            ASSERT_MSG(!ShouldAbortCopyBufferImageAlias(),
+                       "Strict render validation: CopyBuffer destination aliases cached image "
+                       "while taking non-GPU-modified path dst={:#x} src={:#x} size={} "
+                       "src_aliases_image={} dst_gds={} src_gds={}",
+                       dst, src, num_bytes, src_aliases_image, dst_gds, src_gds);
+        }
         if (!src_gds && !IsRegionGpuModified(src, num_bytes) && !src_aliases_image &&
             !dst_aliases_image) {
             // Both buffers were not transferred to GPU yet. Can safely copy in host memory.

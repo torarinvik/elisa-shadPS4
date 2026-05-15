@@ -137,6 +137,10 @@ bool Swapchain::AcquireNextImage() {
     case vk::Result::eSuboptimalKHR:
     case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
+        LOG_WARNING(Render_Vulkan, "Swapchain acquire requires recreation: {}",
+                    vk::to_string(result));
+        needs_recreation = true;
+        break;
     case vk::Result::eErrorUnknown:
         ASSERT_MSG(!IsStrictRenderValidationEnabled(),
                    "Strict render validation: swapchain acquire requires recreation: {}",

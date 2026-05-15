@@ -127,11 +127,19 @@ void GameController::Axis(Input::Axis axis, int value, bool smooth) {
 }
 
 void GameController::Gyro(int id) {
+    if (m_state.angularVelocity.x == gyro_buf[0] && m_state.angularVelocity.y == gyro_buf[1] &&
+        m_state.angularVelocity.z == gyro_buf[2]) {
+        return;
+    }
     m_state.OnGyro(gyro_buf);
     PushState();
 }
 
 void GameController::Acceleration(int id) {
+    if (m_state.acceleration.x == accel_buf[0] && m_state.acceleration.y == accel_buf[1] &&
+        m_state.acceleration.z == accel_buf[2]) {
+        return;
+    }
     m_state.OnAccel(accel_buf);
     PushState();
 }

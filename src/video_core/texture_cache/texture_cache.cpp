@@ -31,6 +31,68 @@ static bool IsStrictRenderValidationEnabled() {
     return enabled;
 }
 
+static bool ShouldAbortAmbiguousImageRangeLookup() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_AMBIGUOUS_IMAGE_RANGE_ABORT");
+    return IsStrictRenderValidationEnabled() && enabled;
+}
+
+static bool ShouldAbortNullGuestImageDescriptor() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_NULL_GUEST_IMAGE_DESCRIPTOR_ABORT");
+    return IsStrictRenderValidationEnabled() && enabled;
+}
+
+static bool IsDepthFormat(vk::Format format) {
+    switch (format) {
+    case vk::Format::eD16Unorm:
+    case vk::Format::eX8D24UnormPack32:
+    case vk::Format::eD32Sfloat:
+    case vk::Format::eD16UnormS8Uint:
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32SfloatS8Uint:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool HasStencil(vk::Format format) {
+    switch (format) {
+    case vk::Format::eS8Uint:
+    case vk::Format::eD16UnormS8Uint:
+    case vk::Format::eD24UnormS8Uint:
+    case vk::Format::eD32SfloatS8Uint:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool IsBlockFormat(vk::Format format) {
+    switch (format) {
+    case vk::Format::eBc1RgbUnormBlock:
+    case vk::Format::eBc1RgbSrgbBlock:
+    case vk::Format::eBc1RgbaUnormBlock:
+    case vk::Format::eBc1RgbaSrgbBlock:
+    case vk::Format::eBc2UnormBlock:
+    case vk::Format::eBc2SrgbBlock:
+    case vk::Format::eBc3UnormBlock:
+    case vk::Format::eBc3SrgbBlock:
+    case vk::Format::eBc4UnormBlock:
+    case vk::Format::eBc4SnormBlock:
+    case vk::Format::eBc5UnormBlock:
+    case vk::Format::eBc5SnormBlock:
+    case vk::Format::eBc6HUfloatBlock:
+    case vk::Format::eBc6HSfloatBlock:
+    case vk::Format::eBc7UnormBlock:
+    case vk::Format::eBc7SrgbBlock:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool IsTraceMetaDataRegisterEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_TRACE_METADATA_REGISTER");
@@ -168,6 +230,9 @@ ImageId TextureCache::GetNullImage(const vk::Format format) {
     info.pixel_format = format;
     info.type = AmdGpu::ImageType::Color2D;
     info.tile_mode = AmdGpu::TileMode::Thin1DThin;
+    info.props.is_depth = IsDepthFormat(format);
+    info.props.has_stencil = HasStencil(format);
+    info.props.is_block = IsBlockFormat(format);
     info.num_bits = 32;
     info.UpdateSize();
 
@@ -640,12 +705,15 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
 
     if (info.guest_address == 0) [[unlikely]] {
-        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
-                   "Strict render validation: image descriptor has null guest address type={} "
-                   "format={} size={}x{}x{} pitch={} layers={} levels={} samples={}",
-                   BindingTypeName(desc.type), vk::to_string(info.pixel_format), info.size.width,
-                   info.size.height, info.size.depth, info.pitch, info.resources.layers,
-                   info.resources.levels, info.num_samples);
+        LOG_WARNING(Render_Vulkan,
+                    "Strict render validation: image descriptor has null guest address type={} "
+                    "format={} size={}x{}x{} pitch={} layers={} levels={} samples={} using "
+                    "null image fallback",
+                    BindingTypeName(desc.type), vk::to_string(info.pixel_format), info.size.width,
+                    info.size.height, info.size.depth, info.pitch, info.resources.layers,
+                    info.resources.levels, info.num_samples);
+        ASSERT_MSG(!ShouldAbortNullGuestImageDescriptor(),
+                   "Strict render validation: image descriptor has null guest address");
         return GetNullImage(info.pixel_format);
     }
 
@@ -763,7 +831,16 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
         LOG_WARNING(Render_Vulkan,
                     "Failed to find exact image match for copy addr={:#x}, size={:#x}", address,
                     size);
-        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+        for (const auto image_id : image_ids) {
+            const Image& image = slot_images[image_id];
+            LOG_WARNING(Render_Vulkan,
+                        "Ambiguous image range candidate image_id={} guest_addr={:#x} "
+                        "guest_size={:#x} size={}x{}x{} levels={} layers={}",
+                        image_id.index, image.info.guest_address, image.info.guest_size,
+                        image.info.size.width, image.info.size.height, image.info.size.depth,
+                        image.info.resources.levels, image.info.resources.layers);
+        }
+        ASSERT_MSG(!ShouldAbortAmbiguousImageRangeLookup(),
                    "Strict render validation: ambiguous image range lookup addr={:#x} size={:#x} "
                    "candidates={}",
                    address, size, image_ids.size());

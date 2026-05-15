@@ -189,78 +189,213 @@ s32 OrbisToNativeSignal(s32 s) {
 std::array<OrbisKernelExceptionHandler, 130> Handlers{};
 
 #ifndef _WIN64
+static int OrbisToNativeSigactionFlags(int flags) {
+    int native_flags = 0;
+    if (flags & POSIX_SA_NOCLDSTOP) {
+        native_flags |= SA_NOCLDSTOP;
+    }
+    if (flags & POSIX_SA_NOCLDWAIT) {
+        native_flags |= SA_NOCLDWAIT;
+    }
+    if (flags & POSIX_SA_SIGINFO) {
+        native_flags |= SA_SIGINFO;
+    }
+    if (flags & POSIX_SA_ONSTACK) {
+        native_flags |= SA_ONSTACK;
+    }
+    if (flags & POSIX_SA_RESTART) {
+        native_flags |= SA_RESTART;
+    }
+    if (flags & POSIX_SA_NODEFER) {
+        native_flags |= SA_NODEFER;
+    }
+    if (flags & POSIX_SA_RESETHAND) {
+        native_flags |= SA_RESETHAND;
+    }
+    return native_flags;
+}
+
+static int NativeToOrbisSigactionFlags(int flags) {
+    int orbis_flags = 0;
+    if (flags & SA_NOCLDSTOP) {
+        orbis_flags |= POSIX_SA_NOCLDSTOP;
+    }
+    if (flags & SA_NOCLDWAIT) {
+        orbis_flags |= POSIX_SA_NOCLDWAIT;
+    }
+    if (flags & SA_SIGINFO) {
+        orbis_flags |= POSIX_SA_SIGINFO;
+    }
+    if (flags & SA_ONSTACK) {
+        orbis_flags |= POSIX_SA_ONSTACK;
+    }
+    if (flags & SA_RESTART) {
+        orbis_flags |= POSIX_SA_RESTART;
+    }
+    if (flags & SA_NODEFER) {
+        orbis_flags |= POSIX_SA_NODEFER;
+    }
+    if (flags & SA_RESETHAND) {
+        orbis_flags |= POSIX_SA_RESETHAND;
+    }
+    return orbis_flags;
+}
+
+#endif
+
+#ifndef _WIN64
+static void CopyNativeContextToOrbis(ucontext_t* raw_context, siginfo_t* inf, Ucontext& ctx) {
+#ifdef __APPLE__
+    const auto& regs = raw_context->uc_mcontext->__ss;
+    ctx.uc_mcontext.mc_r8 = regs.__r8;
+    ctx.uc_mcontext.mc_r9 = regs.__r9;
+    ctx.uc_mcontext.mc_r10 = regs.__r10;
+    ctx.uc_mcontext.mc_r11 = regs.__r11;
+    ctx.uc_mcontext.mc_r12 = regs.__r12;
+    ctx.uc_mcontext.mc_r13 = regs.__r13;
+    ctx.uc_mcontext.mc_r14 = regs.__r14;
+    ctx.uc_mcontext.mc_r15 = regs.__r15;
+    ctx.uc_mcontext.mc_rdi = regs.__rdi;
+    ctx.uc_mcontext.mc_rsi = regs.__rsi;
+    ctx.uc_mcontext.mc_rbp = regs.__rbp;
+    ctx.uc_mcontext.mc_rbx = regs.__rbx;
+    ctx.uc_mcontext.mc_rdx = regs.__rdx;
+    ctx.uc_mcontext.mc_rax = regs.__rax;
+    ctx.uc_mcontext.mc_rcx = regs.__rcx;
+    ctx.uc_mcontext.mc_rsp = regs.__rsp;
+    ctx.uc_mcontext.mc_fs = regs.__fs;
+    ctx.uc_mcontext.mc_gs = regs.__gs;
+    ctx.uc_mcontext.mc_rip = regs.__rip;
+    ctx.uc_mcontext.mc_rflags = regs.__rflags;
+    ctx.uc_mcontext.mc_cs = regs.__cs;
+    ctx.uc_mcontext.mc_addr = reinterpret_cast<uint64_t>(inf->si_addr);
+    ctx.uc_mcontext.mc_trapno = raw_context->uc_mcontext->__es.__trapno;
+    ctx.uc_mcontext.mc_err = raw_context->uc_mcontext->__es.__err;
+#elif defined(__FreeBSD__)
+    const auto& regs = raw_context->uc_mcontext;
+    ctx.uc_mcontext.mc_r8 = regs.mc_r8;
+    ctx.uc_mcontext.mc_r9 = regs.mc_r9;
+    ctx.uc_mcontext.mc_r10 = regs.mc_r10;
+    ctx.uc_mcontext.mc_r11 = regs.mc_r11;
+    ctx.uc_mcontext.mc_r12 = regs.mc_r12;
+    ctx.uc_mcontext.mc_r13 = regs.mc_r13;
+    ctx.uc_mcontext.mc_r14 = regs.mc_r14;
+    ctx.uc_mcontext.mc_r15 = regs.mc_r15;
+    ctx.uc_mcontext.mc_rdi = regs.mc_rdi;
+    ctx.uc_mcontext.mc_rsi = regs.mc_rsi;
+    ctx.uc_mcontext.mc_rbp = regs.mc_rbp;
+    ctx.uc_mcontext.mc_rbx = regs.mc_rbx;
+    ctx.uc_mcontext.mc_rdx = regs.mc_rdx;
+    ctx.uc_mcontext.mc_rax = regs.mc_rax;
+    ctx.uc_mcontext.mc_rcx = regs.mc_rcx;
+    ctx.uc_mcontext.mc_rsp = regs.mc_rsp;
+    ctx.uc_mcontext.mc_fs = regs.mc_fs;
+    ctx.uc_mcontext.mc_gs = regs.mc_gs;
+    ctx.uc_mcontext.mc_rip = regs.mc_rip;
+    ctx.uc_mcontext.mc_rflags = regs.mc_rflags;
+    ctx.uc_mcontext.mc_cs = regs.mc_cs;
+    ctx.uc_mcontext.mc_ss = regs.mc_ss;
+    ctx.uc_mcontext.mc_addr = uint64_t(regs.mc_addr);
+    ctx.uc_mcontext.mc_trapno = regs.mc_trapno;
+    ctx.uc_mcontext.mc_err = regs.mc_err;
+#else
+    const auto& regs = raw_context->uc_mcontext.gregs;
+    ctx.uc_mcontext.mc_r8 = regs[REG_R8];
+    ctx.uc_mcontext.mc_r9 = regs[REG_R9];
+    ctx.uc_mcontext.mc_r10 = regs[REG_R10];
+    ctx.uc_mcontext.mc_r11 = regs[REG_R11];
+    ctx.uc_mcontext.mc_r12 = regs[REG_R12];
+    ctx.uc_mcontext.mc_r13 = regs[REG_R13];
+    ctx.uc_mcontext.mc_r14 = regs[REG_R14];
+    ctx.uc_mcontext.mc_r15 = regs[REG_R15];
+    ctx.uc_mcontext.mc_rdi = regs[REG_RDI];
+    ctx.uc_mcontext.mc_rsi = regs[REG_RSI];
+    ctx.uc_mcontext.mc_rbp = regs[REG_RBP];
+    ctx.uc_mcontext.mc_rbx = regs[REG_RBX];
+    ctx.uc_mcontext.mc_rdx = regs[REG_RDX];
+    ctx.uc_mcontext.mc_rax = regs[REG_RAX];
+    ctx.uc_mcontext.mc_rcx = regs[REG_RCX];
+    ctx.uc_mcontext.mc_rsp = regs[REG_RSP];
+    ctx.uc_mcontext.mc_fs = (regs[REG_CSGSFS] >> 32) & 0xFFFF;
+    ctx.uc_mcontext.mc_gs = (regs[REG_CSGSFS] >> 16) & 0xFFFF;
+    ctx.uc_mcontext.mc_rip = (regs[REG_RIP]);
+    ctx.uc_mcontext.mc_addr = reinterpret_cast<uint64_t>(inf->si_addr);
+    ctx.uc_mcontext.mc_err = regs[REG_ERR];
+#endif
+}
+
+static void CopyOrbisContextToNative(const Ucontext& ctx, ucontext_t* raw_context) {
+#ifdef __APPLE__
+    auto& regs = raw_context->uc_mcontext->__ss;
+    regs.__r8 = ctx.uc_mcontext.mc_r8;
+    regs.__r9 = ctx.uc_mcontext.mc_r9;
+    regs.__r10 = ctx.uc_mcontext.mc_r10;
+    regs.__r11 = ctx.uc_mcontext.mc_r11;
+    regs.__r12 = ctx.uc_mcontext.mc_r12;
+    regs.__r13 = ctx.uc_mcontext.mc_r13;
+    regs.__r14 = ctx.uc_mcontext.mc_r14;
+    regs.__r15 = ctx.uc_mcontext.mc_r15;
+    regs.__rdi = ctx.uc_mcontext.mc_rdi;
+    regs.__rsi = ctx.uc_mcontext.mc_rsi;
+    regs.__rbp = ctx.uc_mcontext.mc_rbp;
+    regs.__rbx = ctx.uc_mcontext.mc_rbx;
+    regs.__rdx = ctx.uc_mcontext.mc_rdx;
+    regs.__rax = ctx.uc_mcontext.mc_rax;
+    regs.__rcx = ctx.uc_mcontext.mc_rcx;
+    regs.__rsp = ctx.uc_mcontext.mc_rsp;
+    regs.__rip = ctx.uc_mcontext.mc_rip;
+    regs.__rflags = ctx.uc_mcontext.mc_rflags;
+#elif defined(__FreeBSD__)
+    auto& regs = raw_context->uc_mcontext;
+    regs.mc_r8 = ctx.uc_mcontext.mc_r8;
+    regs.mc_r9 = ctx.uc_mcontext.mc_r9;
+    regs.mc_r10 = ctx.uc_mcontext.mc_r10;
+    regs.mc_r11 = ctx.uc_mcontext.mc_r11;
+    regs.mc_r12 = ctx.uc_mcontext.mc_r12;
+    regs.mc_r13 = ctx.uc_mcontext.mc_r13;
+    regs.mc_r14 = ctx.uc_mcontext.mc_r14;
+    regs.mc_r15 = ctx.uc_mcontext.mc_r15;
+    regs.mc_rdi = ctx.uc_mcontext.mc_rdi;
+    regs.mc_rsi = ctx.uc_mcontext.mc_rsi;
+    regs.mc_rbp = ctx.uc_mcontext.mc_rbp;
+    regs.mc_rbx = ctx.uc_mcontext.mc_rbx;
+    regs.mc_rdx = ctx.uc_mcontext.mc_rdx;
+    regs.mc_rax = ctx.uc_mcontext.mc_rax;
+    regs.mc_rcx = ctx.uc_mcontext.mc_rcx;
+    regs.mc_rsp = ctx.uc_mcontext.mc_rsp;
+    regs.mc_fs = ctx.uc_mcontext.mc_fs;
+    regs.mc_gs = ctx.uc_mcontext.mc_gs;
+    regs.mc_rip = ctx.uc_mcontext.mc_rip;
+    regs.mc_rflags = ctx.uc_mcontext.mc_rflags;
+#else
+    auto& regs = raw_context->uc_mcontext.gregs;
+    regs[REG_R8] = ctx.uc_mcontext.mc_r8;
+    regs[REG_R9] = ctx.uc_mcontext.mc_r9;
+    regs[REG_R10] = ctx.uc_mcontext.mc_r10;
+    regs[REG_R11] = ctx.uc_mcontext.mc_r11;
+    regs[REG_R12] = ctx.uc_mcontext.mc_r12;
+    regs[REG_R13] = ctx.uc_mcontext.mc_r13;
+    regs[REG_R14] = ctx.uc_mcontext.mc_r14;
+    regs[REG_R15] = ctx.uc_mcontext.mc_r15;
+    regs[REG_RDI] = ctx.uc_mcontext.mc_rdi;
+    regs[REG_RSI] = ctx.uc_mcontext.mc_rsi;
+    regs[REG_RBP] = ctx.uc_mcontext.mc_rbp;
+    regs[REG_RBX] = ctx.uc_mcontext.mc_rbx;
+    regs[REG_RDX] = ctx.uc_mcontext.mc_rdx;
+    regs[REG_RAX] = ctx.uc_mcontext.mc_rax;
+    regs[REG_RCX] = ctx.uc_mcontext.mc_rcx;
+    regs[REG_RSP] = ctx.uc_mcontext.mc_rsp;
+    regs[REG_RIP] = ctx.uc_mcontext.mc_rip;
+#endif
+}
+
 void SigactionHandler(int native_signum, siginfo_t* inf, ucontext_t* raw_context) {
     const auto handler = Handlers[NativeToOrbisSignal(native_signum)];
     if (handler) {
         auto ctx = Ucontext{};
-#ifdef __APPLE__
-        const auto& regs = raw_context->uc_mcontext->__ss;
-        ctx.uc_mcontext.mc_r8 = regs.__r8;
-        ctx.uc_mcontext.mc_r9 = regs.__r9;
-        ctx.uc_mcontext.mc_r10 = regs.__r10;
-        ctx.uc_mcontext.mc_r11 = regs.__r11;
-        ctx.uc_mcontext.mc_r12 = regs.__r12;
-        ctx.uc_mcontext.mc_r13 = regs.__r13;
-        ctx.uc_mcontext.mc_r14 = regs.__r14;
-        ctx.uc_mcontext.mc_r15 = regs.__r15;
-        ctx.uc_mcontext.mc_rdi = regs.__rdi;
-        ctx.uc_mcontext.mc_rsi = regs.__rsi;
-        ctx.uc_mcontext.mc_rbp = regs.__rbp;
-        ctx.uc_mcontext.mc_rbx = regs.__rbx;
-        ctx.uc_mcontext.mc_rdx = regs.__rdx;
-        ctx.uc_mcontext.mc_rax = regs.__rax;
-        ctx.uc_mcontext.mc_rcx = regs.__rcx;
-        ctx.uc_mcontext.mc_rsp = regs.__rsp;
-        ctx.uc_mcontext.mc_fs = regs.__fs;
-        ctx.uc_mcontext.mc_gs = regs.__gs;
-        ctx.uc_mcontext.mc_rip = regs.__rip;
-        ctx.uc_mcontext.mc_addr = reinterpret_cast<uint64_t>(inf->si_addr);
-#elif defined(__FreeBSD__)
-        const auto& regs = raw_context->uc_mcontext;
-        ctx.uc_mcontext.mc_r8 = regs.mc_r8;
-        ctx.uc_mcontext.mc_r9 = regs.mc_r9;
-        ctx.uc_mcontext.mc_r10 = regs.mc_r10;
-        ctx.uc_mcontext.mc_r11 = regs.mc_r11;
-        ctx.uc_mcontext.mc_r12 = regs.mc_r12;
-        ctx.uc_mcontext.mc_r13 = regs.mc_r13;
-        ctx.uc_mcontext.mc_r14 = regs.mc_r14;
-        ctx.uc_mcontext.mc_r15 = regs.mc_r15;
-        ctx.uc_mcontext.mc_rdi = regs.mc_rdi;
-        ctx.uc_mcontext.mc_rsi = regs.mc_rsi;
-        ctx.uc_mcontext.mc_rbp = regs.mc_rbp;
-        ctx.uc_mcontext.mc_rbx = regs.mc_rbx;
-        ctx.uc_mcontext.mc_rdx = regs.mc_rdx;
-        ctx.uc_mcontext.mc_rax = regs.mc_rax;
-        ctx.uc_mcontext.mc_rcx = regs.mc_rcx;
-        ctx.uc_mcontext.mc_rsp = regs.mc_rsp;
-        ctx.uc_mcontext.mc_fs = regs.mc_fs;
-        ctx.uc_mcontext.mc_gs = regs.mc_gs;
-        ctx.uc_mcontext.mc_rip = regs.mc_rip;
-        ctx.uc_mcontext.mc_addr = uint64_t(regs.mc_addr);
-#else
-        const auto& regs = raw_context->uc_mcontext.gregs;
-        ctx.uc_mcontext.mc_r8 = regs[REG_R8];
-        ctx.uc_mcontext.mc_r9 = regs[REG_R9];
-        ctx.uc_mcontext.mc_r10 = regs[REG_R10];
-        ctx.uc_mcontext.mc_r11 = regs[REG_R11];
-        ctx.uc_mcontext.mc_r12 = regs[REG_R12];
-        ctx.uc_mcontext.mc_r13 = regs[REG_R13];
-        ctx.uc_mcontext.mc_r14 = regs[REG_R14];
-        ctx.uc_mcontext.mc_r15 = regs[REG_R15];
-        ctx.uc_mcontext.mc_rdi = regs[REG_RDI];
-        ctx.uc_mcontext.mc_rsi = regs[REG_RSI];
-        ctx.uc_mcontext.mc_rbp = regs[REG_RBP];
-        ctx.uc_mcontext.mc_rbx = regs[REG_RBX];
-        ctx.uc_mcontext.mc_rdx = regs[REG_RDX];
-        ctx.uc_mcontext.mc_rax = regs[REG_RAX];
-        ctx.uc_mcontext.mc_rcx = regs[REG_RCX];
-        ctx.uc_mcontext.mc_rsp = regs[REG_RSP];
-        ctx.uc_mcontext.mc_fs = (regs[REG_CSGSFS] >> 32) & 0xFFFF;
-        ctx.uc_mcontext.mc_gs = (regs[REG_CSGSFS] >> 16) & 0xFFFF;
-        ctx.uc_mcontext.mc_rip = (regs[REG_RIP]);
-        ctx.uc_mcontext.mc_addr = reinterpret_cast<uint64_t>(inf->si_addr);
-#endif
+        CopyNativeContextToOrbis(raw_context, inf, ctx);
         handler(NativeToOrbisSignal(native_signum), &ctx);
+        CopyOrbisContextToNative(ctx, raw_context);
     } else {
         UNREACHABLE_MSG("Unhandled exception");
     }
@@ -375,7 +510,7 @@ s32 PS4_SYSV_ABI posix_sigaction(s32 sig, Sigaction* act, Sigaction* oact) {
     LOG_INFO(Lib_Kernel, "called, sig: {}, native sig: {}", sig, native_sig);
     struct sigaction native_act{};
     if (act) {
-        native_act.sa_flags = act->sa_flags; // todo check compatibility, on Linux it seems fine
+        native_act.sa_flags = OrbisToNativeSigactionFlags(act->sa_flags);
         native_act.sa_sigaction =
             reinterpret_cast<decltype(native_act.sa_sigaction)>(SigactionHandler);
         if (!posix_sigisemptyset(&act->sa_mask)) {
@@ -396,7 +531,7 @@ s32 PS4_SYSV_ABI posix_sigaction(s32 sig, Sigaction* act, Sigaction* oact) {
     struct sigaction native_oact{};
     s32 ret = sigaction(native_sig, act ? &native_act : nullptr, oact ? &native_oact : nullptr);
     if (oact) {
-        oact->sa_flags = native_oact.sa_flags;
+        oact->sa_flags = NativeToOrbisSigactionFlags(native_oact.sa_flags);
         oact->__sigaction_handler.sigaction =
             reinterpret_cast<decltype(oact->__sigaction_handler.sigaction)>(prev_handler);
         if (!sigisemptyset(&native_oact.sa_mask)) {

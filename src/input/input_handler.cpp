@@ -3,6 +3,7 @@
 
 #include "input_handler.h"
 
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <list>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "SDL3/SDL_events.h"
+#include "SDL3/SDL_gamepad.h"
 #include "SDL3/SDL_timer.h"
 
 #include "common/elf_info.h"
@@ -62,16 +64,16 @@ circle = kp6
 cross = kp2
 square = kp4
 # Alternatives for users without a keypad
-triangle = c
-circle = b
-cross = n
-square = v
+triangle = v
+circle = c
+cross = x
+square = z
 
 l1 = q
 r1 = u
 l2 = e
 r2 = o
-l3 = x
+l3 = n
 r3 = m
 
 options = enter
@@ -293,6 +295,59 @@ static OrbisPadButtonDataOffset SDLGamepadToOrbisButton(u8 button) {
     }
 }
 
+static bool IsTraceInputEnabled() {
+    const char* value = std::getenv("SHADPS4_TRACE_INPUT");
+    return value != nullptr && value[0] != '\0' && std::string_view{value} != "0";
+}
+
+static const char* OrbisButtonName(OrbisPadButtonDataOffset button) {
+    using OPBDO = OrbisPadButtonDataOffset;
+    switch (button) {
+    case OPBDO::Down:
+        return "dpad_down";
+    case OPBDO::Up:
+        return "dpad_up";
+    case OPBDO::Left:
+        return "dpad_left";
+    case OPBDO::Right:
+        return "dpad_right";
+    case OPBDO::Cross:
+        return "cross";
+    case OPBDO::Circle:
+        return "circle";
+    case OPBDO::Square:
+        return "square";
+    case OPBDO::Triangle:
+        return "triangle";
+    case OPBDO::L1:
+        return "l1";
+    case OPBDO::R1:
+        return "r1";
+    case OPBDO::L2:
+        return "l2";
+    case OPBDO::R2:
+        return "r2";
+    case OPBDO::L3:
+        return "l3";
+    case OPBDO::R3:
+        return "r3";
+    case OPBDO::Options:
+        return "options";
+    case OPBDO::TouchPad:
+        return "touchpad";
+    default:
+        return "none";
+    }
+}
+
+static const char* SdlButtonName(u32 button) {
+    if (button == SDL_GAMEPAD_BUTTON_INVALID || button >= SDL_GAMEPAD_BUTTON_COUNT) {
+        return "custom";
+    }
+    const char* name = SDL_GetGamepadStringForButton(static_cast<SDL_GamepadButton>(button));
+    return name != nullptr ? name : "unknown";
+}
+
 Axis GetAxisFromSDLAxis(u8 sdl_axis) {
     switch (sdl_axis) {
     case SDL_GAMEPAD_AXIS_LEFTX:
@@ -360,6 +415,11 @@ void ParseInputConfig(const std::string game_id = "") {
         EmulatorSettings.IsUseUnifiedInputConfig() ? "default" : game_id;
     const auto config_file = GetInputConfigFile(game_id_or_default);
     const auto global_config_file = GetInputConfigFile("global");
+    if (IsTraceInputEnabled()) {
+        LOG_INFO(Input, "TRACE_INPUT config game_id={} config={} global_config={} unified={}",
+                 game_id, config_file.string(), global_config_file.string(),
+                 EmulatorSettings.IsUseUnifiedInputConfig());
+    }
 
     // we reset these here so in case the user fucks up or doesn't include some of these,
     // we can fall back to default
@@ -599,6 +659,24 @@ void ParseInputConfig(const std::string game_id = "") {
         } else {
             connections.push_back(connection);
         }
+        if (IsTraceInputEnabled()) {
+            if (connection.output->IsButton()) {
+                const auto mapped = SDLGamepadToOrbisButton(connection.output->button);
+                LOG_INFO(Input,
+                         "TRACE_INPUT config_binding line={} output={} gamepad={} input={} "
+                         "sdl_button={} sdl_name={} orbis={}",
+                         lineCount, output_string, connection.output->gamepad_id,
+                         binding.ToString(), connection.output->button,
+                         SdlButtonName(connection.output->button),
+                         OrbisButtonName(mapped));
+            } else if (connection.output->IsAxis()) {
+                LOG_INFO(Input,
+                         "TRACE_INPUT config_binding line={} output={} gamepad={} input={} "
+                         "axis={} axis_param={}",
+                         lineCount, output_string, connection.output->gamepad_id,
+                         binding.ToString(), connection.output->axis, connection.axis_param);
+            }
+        }
         LOG_DEBUG(Input, "Succesfully parsed line {}", lineCount);
     };
     while (std::getline(global_config_stream, line)) {
@@ -737,6 +815,14 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
     else
         UNREACHABLE();
     if (button != SDL_GAMEPAD_BUTTON_INVALID) {
+        if (IsTraceInputEnabled()) {
+            const auto mapped = SDLGamepadToOrbisButton(button);
+            LOG_INFO(Input,
+                     "TRACE_INPUT controller_button gamepad={} sdl_button={} sdl_name={} "
+                     "orbis={} pressed={}",
+                     gamepad_index, button, SdlButtonName(button),
+                     OrbisButtonName(mapped), new_button_state);
+        }
         switch (button) {
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT:
             controller->SetTouchpadState(0, new_button_state, 0.25f, 0.5f);
@@ -977,6 +1063,13 @@ InputEvent BindingConnection::ProcessBinding() {
     }
     if (binding.keys[0].type != InputType::Axis) { // the axes spam inputs, making this unreadable
         LOG_DEBUG(Input, "Input found: {}", binding.ToString());
+        if (IsTraceInputEnabled()) {
+            LOG_INFO(Input,
+                     "TRACE_INPUT binding_active gamepad={} binding={} output={} button={} "
+                     "axis={} axis_value={}",
+                     output->gamepad_id, binding.ToString(), output->ToString(), output->button,
+                     output->axis, event.axis_value);
+        }
     }
     event.active = true;
     return event; // All keys are active

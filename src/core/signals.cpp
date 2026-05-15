@@ -8,11 +8,16 @@
 #include "core/libraries/kernel/threads/exception.h"
 #include "core/signals.h"
 
+#include <algorithm>
+
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <cstdio>
+#include <cstdlib>
 #include <csignal>
 #include <pthread.h>
+#include <unistd.h>
 #ifdef ARCH_X86_64
 #include <Zydis/Formatter.h>
 #endif
@@ -21,7 +26,7 @@
 #ifndef _WIN32
 namespace Libraries::Kernel {
 void SigactionHandler(int native_signum, siginfo_t* inf, ucontext_t* raw_context);
-extern std::array<OrbisKernelExceptionHandler, 32> Handlers;
+extern std::array<OrbisKernelExceptionHandler, 130> Handlers;
 } // namespace Libraries::Kernel
 #endif
 
@@ -74,6 +79,26 @@ static std::string DisassembleInstruction(void* code_address) {
     return buffer;
 }
 
+static bool TraceSignalFaults() {
+    static const bool enabled = std::getenv("SHADPS4_TRACE_SIGNAL_FAULTS") != nullptr;
+    return enabled;
+}
+
+static void TraceSignalFault(int sig, void* raw_context, void* fault_address) {
+    if (!TraceSignalFaults()) {
+        return;
+    }
+    char buffer[256];
+    const auto len = std::snprintf(
+        buffer, sizeof(buffer),
+        "TRACE_SIGNAL_FAULT sig=%d rip=%p fault=%p is_write=%d\n", sig,
+        Common::GetRip(raw_context), fault_address, Common::IsWriteError(raw_context) ? 1 : 0);
+    if (len > 0) {
+        const auto size = static_cast<size_t>(std::min(len, static_cast<int>(sizeof(buffer) - 1)));
+        write(STDERR_FILENO, buffer, size);
+    }
+}
+
 void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
     const auto* signals = Signals::Instance();
 
@@ -82,6 +107,7 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
     switch (sig) {
     case SIGSEGV:
     case SIGBUS: {
+        TraceSignalFault(sig, raw_context, info->si_addr);
         const bool is_write = Common::IsWriteError(raw_context);
         if (!signals->DispatchAccessViolation(raw_context, info->si_addr)) {
             // If the guest has installed a custom signal handler, and the access violation didn't

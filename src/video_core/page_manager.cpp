@@ -13,6 +13,7 @@
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 #ifndef _WIN64
+#include <cstdlib>
 #include <sys/mman.h>
 #include "common/adaptive_mutex.h"
 #ifdef ENABLE_USERFAULTFD
@@ -38,6 +39,13 @@ namespace VideoCore {
 
 constexpr size_t PM_PAGE_SIZE = 4_KB;
 constexpr size_t PM_PAGE_BITS = 12;
+
+#ifndef _WIN64
+static bool DisableGpuMemoryProtection() {
+    static const bool disabled = std::getenv("SHADPS4_DISABLE_GPU_MEMORY_PROTECTION") != nullptr;
+    return disabled;
+}
+#endif
 
 struct PageManager::Impl {
     struct PageState {
@@ -202,6 +210,9 @@ struct PageManager::Impl {
 
     void Protect(VAddr address, size_t size, Core::MemoryPermission perms) {
         RENDERER_TRACE;
+        if (DisableGpuMemoryProtection()) {
+            return;
+        }
         auto* memory = Core::Memory::Instance();
         auto& impl = memory->GetAddressSpace();
         ASSERT_MSG(perms != Core::MemoryPermission::Write,
@@ -212,6 +223,20 @@ struct PageManager::Impl {
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
         const auto addr = reinterpret_cast<VAddr>(fault_address);
         if (Common::IsWriteError(context)) {
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+            // Rosetta can abort when a translated x86 block faults repeatedly while emulating
+            // forward through adjacent vector stores. Unprotect a small page window so the
+            // retried instruction sequence can complete without another synchronous trap.
+            constexpr VAddr rosetta_region_size = 16_MB;
+            const auto region_addr = addr & ~(rosetta_region_size - 1);
+            if (rasterizer->InvalidateMemory(region_addr, rosetta_region_size)) {
+                return true;
+            }
+            const auto page_addr = addr & ~(static_cast<VAddr>(PM_PAGE_SIZE) - 1);
+            if (rasterizer->InvalidateMemory(page_addr, PM_PAGE_SIZE * 4)) {
+                return true;
+            }
+#endif
             return rasterizer->InvalidateMemory(addr, 8);
         } else {
             return rasterizer->ReadMemory(addr, 8);
