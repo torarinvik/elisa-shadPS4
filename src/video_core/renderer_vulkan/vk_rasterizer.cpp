@@ -1213,12 +1213,16 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         attachment.is_clear = is_clear;
 
         if (log_render_pass) {
+            const auto active_cmask_addr = col_buf.info.fast_clear ? col_buf.CmaskAddress() : 0;
+            const auto active_fmask_addr = col_buf.info.compression ? col_buf.FmaskAddress() : 0;
             LOG_INFO(Render_Vulkan,
                      "TRACE_RENDER render_target pass={} cb={} mrt_mask={:#x} color_mode={} "
                      "prim={} cb_addr={:#x} cb_samples={} image_id={} guest_addr={:#x} "
                      "guest_size={} size={}x{}x{} pitch={} vk_format={} tile_mode={} "
                      "array_mode={} bits={} info_samples={} backing_samples={} layout={} "
-                     "flags={:#x} clear={} clear_value0={:#x} cmask={:#x} fmask={:#x}",
+                     "flags={:#x} clear={} clear_value0={:#x} cmask={:#x} fmask={:#x} "
+                     "fast_clear={} compression={} cmask_base={:#x} fmask_base={:#x} "
+                     "cmask_slice_tile_max={} fmask_slice_tile_max={} fmask_tile_max={}",
                      render_pass_index, cb, key.mrt_mask, static_cast<u32>(regs.color_control.mode),
                      static_cast<u32>(regs.primitive_type), col_buf.Address(), col_buf.NumSamples(),
                      image_id.index, image->info.guest_address, image->info.guest_size,
@@ -1228,8 +1232,11 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
                      static_cast<u32>(image->info.array_mode), image->info.num_bits,
                      image->info.num_samples, image->backing->num_samples,
                      vk::to_string(image->backing->state.layout), static_cast<u32>(image->flags),
-                     is_clear, clear_value.color.uint32[0], col_buf.CmaskAddress(),
-                     col_buf.FmaskAddress());
+                     is_clear, clear_value.color.uint32[0], active_cmask_addr, active_fmask_addr,
+                     col_buf.info.fast_clear, col_buf.info.compression,
+                     col_buf.cmask_base_address, col_buf.fmask_base_address,
+                     col_buf.cmask_slice.tile_max, col_buf.fmask_slice.tile_max,
+                     col_buf.pitch.fmask_tile_max);
         }
 
         image->usage.render_target = 1u;

@@ -21,9 +21,9 @@ go run ./src test tests --project ../shadPS4/elisa
 go run ./src run app --project ../shadPS4/elisa
 ```
 
-The app runs the `baseline-safe` profile and the targeted `fmask-null-read` profile with 8 second
-timeouts, prints both render summaries, then prints a compact comparison. The test target uses fixture
-logs and does not launch the emulator.
+The app runs the `baseline-safe` profile, asks Elisa to choose the next safest targeted profile from
+that baseline summary, then runs the chosen profile with an 8 second timeout and prints a compact
+comparison. The test target uses fixture logs and does not launch the emulator.
 
 For already-captured logs, call `ufc_trace_analyze_existing_log(path)` from Elisa. That path only grants
 `FS.Read`, `Sys.FFI`, and `SysMemory.Foreign`; it does not spawn or kill shadPS4. This is the preferred
@@ -77,10 +77,12 @@ metadata addresses, whether render targets reported aliased FMASK/CMASK addresse
 texture/storage/videoout-storage counts, last bound image metadata, last pipeline hashes, and a small
 black-screen-adjacent suspicious score.
 
-The FMASK classifier is intentionally Elisa-owned rather than C++ renderer-owned. It currently marks
-missing FMASK metadata, distinct FMASK/CMASK metadata, aliased FMASK/CMASK metadata, and the especially
-suspicious case where a single-sample render target still reports an aliased FMASK/CMASK address. That
-keeps this diagnosis inspectable and testable before we port any renderer behavior.
+The FMASK classifier is intentionally Elisa-owned rather than C++ renderer-owned. The C++ trace reports
+active metadata addresses, while still including raw CMASK/FM‌ASK register bases for audit. Elisa
+currently marks missing FMASK metadata, distinct FMASK/CMASK metadata, aliased FMASK/CMASK metadata,
+and the especially suspicious case where a single-sample render target still reports an active aliased
+FMASK/CMASK address. That keeps this diagnosis inspectable and testable before we port any renderer
+behavior.
 
 Profile comparisons also print an explicit conclusion. If either run lacks render-target coverage in
 the analyzed excerpt, the comparison is marked inconclusive instead of treating missing FMASK evidence

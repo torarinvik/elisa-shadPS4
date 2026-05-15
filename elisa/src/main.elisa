@@ -6,7 +6,7 @@ def main() -> int:
     experiment: mutable TraceResult = zeroed
     can Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
         baseline <- ufc_trace_run_baseline_safe("../shadPS4")
-        experiment <- ufc_trace_run_profile("../shadPS4", fmask_null_read_profile())
+        experiment <- ufc_trace_run_profile("../shadPS4", ufc_trace_recommended_profile(baseline.render))
     can Console.Write:
         ufc_trace_print_summary(baseline)
         ufc_trace_print_summary(experiment)

@@ -222,6 +222,13 @@ def ufc_trace_fmask_risk_recommends_targeted_profiles() -> void can[Abort.Panic]
         if mixed_risk.recommended_profile.name != fmask_null_read_profile().name:
             panic("expected metadata-hit recommendation to take priority")
 
+        missing_mrt1_summary: mutable RenderCheckpoint = empty_checkpoint()
+        missing_mrt1_summary.fmask_cmask_alias_count <- 1
+        missing_mrt1_summary.fmask_decompress_missing_mrt1_count <- 1
+        missing_mrt1_risk: FmaskRisk = ufc_trace_fmask_risk(missing_mrt1_summary)
+        if missing_mrt1_risk.recommended_profile.name != fmask_in_place_profile().name:
+            panic("expected missing mrt1 to recommend fmask in-place")
+
 
 @test
 def ufc_trace_fmask_metadata_classifier_marks_single_sample_alias() -> void can[Abort.Panic]:

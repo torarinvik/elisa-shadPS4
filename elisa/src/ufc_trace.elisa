@@ -495,10 +495,10 @@ def ufc_trace_analyze_text(log_text: cstr) -> RenderCheckpoint:
 def ufc_trace_recommended_profile(summary: RenderCheckpoint) -> TraceProfile:
     if summary.null_metadata_action_count > 0 or summary.metadata_read_hits_last_fmask_count > 0:
         return fmask_null_read_profile()
-    if summary.fmask_cmask_alias_count > 0:
-        return fmask_null_read_profile()
     if summary.fmask_decompress_missing_mrt1_count > 0 or summary.fmask_decompress_count > 0:
         return fmask_in_place_profile()
+    if summary.fmask_cmask_alias_count > 0:
+        return fmask_null_read_profile()
     if summary.compositor_null_layer_count > 0 or summary.image_binding_null_count > 0:
         return compositor_null_layer_profile()
     return baseline_safe_profile()
