@@ -50,6 +50,18 @@ public:
         return surface_format;
     }
 
+    vk::SurfaceFormatKHR GetCurrentSurfaceFormat() const {
+        return needs_hdr ? vk::SurfaceFormatKHR{
+                               .format = vk::Format::eA2B10G10R10UnormPack32,
+                               .colorSpace = vk::ColorSpaceKHR::eHdr10St2084EXT,
+                           }
+                         : surface_format;
+    }
+
+    vk::Format GetCurrentImageFormat() const {
+        return GetCurrentSurfaceFormat().format;
+    }
+
     vk::SwapchainKHR GetHandle() const {
         return swapchain;
     }

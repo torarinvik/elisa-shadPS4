@@ -182,13 +182,13 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
                     img.output_image_view && width > 0 && height > 0),
                "Strict render validation: invalid FSR working images id={} dirty={} "
                "intermediate={:#x} intermediate_view={:#x} output={:#x} output_view={:#x} "
-               "cur_size={}x{} output_initialized={}",
+               "cur_size={}x{}",
                img.id, img.dirty,
                reinterpret_cast<uintptr_t>(static_cast<VkImage>(img.intermediary_image.image)),
                reinterpret_cast<uintptr_t>(static_cast<VkImageView>(img.intermediary_image_view.get())),
                reinterpret_cast<uintptr_t>(static_cast<VkImage>(img.output_image.image)),
                reinterpret_cast<uintptr_t>(static_cast<VkImageView>(img.output_image_view.get())),
-               width, height, img.output_initialized);
+               width, height);
 
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{

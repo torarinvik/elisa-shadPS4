@@ -1117,7 +1117,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                          "guest_addr={:#x} guest_size={} image_size={}x{}x{} image_levels={} "
                          "image_layers={} image_type={} image_format={} view_type={} "
                          "view_format={} backing_samples={} layout={} desc_addr={:#x} "
-                         "desc_size={}x{}x{} desc_pitch={} desc_base_array={} desc_mips={} "
+                         "desc_size={}x{}x{} desc_pitch={} desc_base_layer={} desc_mips={} "
                          "view_base_level={} view_levels={} view_end_level={} "
                          "view_base_layer={} view_layers={} view_end_layer={} swizzle={}{}{}{} "
                          "empty_range={} oob_range={}",
@@ -1131,8 +1131,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                          image.backing ? image.backing->num_samples : 0,
                          image.backing ? vk::to_string(image.backing->state.layout) : "Undefined",
                          desc.info.guest_address, desc.info.size.width, desc.info.size.height,
-                         desc.info.size.depth, desc.info.pitch, desc.info.base_array,
-                         desc.info.NumLevels(), view_base_level, view_levels, view_end_level,
+                         desc.info.size.depth, desc.info.pitch, view_base_layer, view_levels,
+                         view_base_level, view_levels, view_end_level,
                          view_base_layer, view_layers, view_end_layer,
                          static_cast<u32>(desc.view_info.mapping.r),
                          static_cast<u32>(desc.view_info.mapping.g),

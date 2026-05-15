@@ -28,6 +28,7 @@ mkdir -p "$EMU_SCREENSHOT_DIR" "$DESKTOP_SCREENSHOT_DIR"
 : "${SHADPS4_COMPOSITOR_ZERO_LAYER:=0}"
 : "${SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG:=0}"
 : "${SHADPS4_BLACK_WATCHDOG_ARMED:=0}"
+: "${SHADPS4_BIN:=./build/shadps4}"
 
 export SHADPS4_TRACE_INPUT=1
 export SHADPS4_TRACE_RENDER
@@ -73,7 +74,7 @@ fi
     echo "aggressive_logging_enable_key=F10"
     echo "aggressive_logging_disable_key=F9"
     echo "video_out_trace_every=$SHADPS4_TRACE_VIDEO_OUT_EVERY"
-    echo "command=./build/shadps4 -g Games/CUSA00264/eboot.bin"
+    echo "command=$SHADPS4_BIN -g Games/CUSA00264/eboot.bin"
 } > "$SESSION_DIR/session_info.txt"
 
 GAME_CONFIG="$HOME/Library/Application Support/shadPS4/custom_configs/CUSA00264.json"
@@ -111,4 +112,4 @@ echo "Trace session: $SESSION_DIR"
 echo "Press Ctrl-C here after the black-screen point, unless the machine freezes."
 echo "Emulator output is being written to $SESSION_DIR/emulator.log"
 
-./build/shadps4 -g Games/CUSA00264/eboot.bin > "$SESSION_DIR/emulator.log" 2>&1
+"$SHADPS4_BIN" -g Games/CUSA00264/eboot.bin > "$SESSION_DIR/emulator.log" 2>&1
