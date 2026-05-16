@@ -96,6 +96,9 @@ bool Matches(const ShadLaunchIntentCABI& elisa, const LaunchIntent::Shadow& cpp)
            elisa.wait_pid == cpp.wait_pid &&
            elisa.game_arg_count == cpp.game_arg_count &&
            std::strcmp(PtrToString(elisa.first_game_arg), cpp.first_game_arg.c_str()) == 0 &&
+           std::strcmp(PtrToString(elisa.second_game_arg), cpp.second_game_arg.c_str()) == 0 &&
+           std::strcmp(PtrToString(elisa.third_game_arg), cpp.third_game_arg.c_str()) == 0 &&
+           std::strcmp(PtrToString(elisa.fourth_game_arg), cpp.fourth_game_arg.c_str()) == 0 &&
            static_cast<bool>(elisa.ignore_game_patch) == cpp.ignore_game_patch &&
            static_cast<bool>(elisa.show_fps) == cpp.show_fps &&
            static_cast<bool>(elisa.log_append) == cpp.log_append &&
@@ -104,15 +107,14 @@ bool Matches(const ShadLaunchIntentCABI& elisa, const LaunchIntent::Shadow& cpp)
 }
 
 bool RunCase(const char* name, const std::vector<std::string>& args) {
-    std::vector<uint8_t*> argv(13, reinterpret_cast<uint8_t*>(const_cast<char*>("")));
-    for (size_t i = 0; i < args.size() && i < argv.size(); ++i) {
+    std::vector<uint8_t*> argv(args.size());
+    for (size_t i = 0; i < args.size(); ++i) {
         argv[i] = reinterpret_cast<uint8_t*>(const_cast<char*>(args[i].c_str()));
     }
 
     ShadLaunchIntentCABI elisa{};
     const intptr_t abi_ok = shadps4_elisa_parse_launch_intent(
-        static_cast<int64_t>(args.size()), argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
-        argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], &elisa);
+        static_cast<int64_t>(args.size()), argv.empty() ? nullptr : argv.data(), &elisa);
     const LaunchIntent::Shadow cpp = ParseCppShadow(args);
     if (!abi_ok || !Matches(elisa, cpp)) {
         std::cerr << "Launch-intent shadow mismatch in " << name << ": abi_ok=" << abi_ok
@@ -137,6 +139,9 @@ int main() {
                                 "--config-global"}},
         {"invalid_fullscreen", {"shadps4", "--game", "CUSA00264", "--fullscreen", "maybe"}},
         {"guest_args", {"shadps4", "--game", "CUSA00264", "--", "--guest-flag", "value"}},
+        {"many_guest_args",
+         {"shadps4", "--game", "CUSA00264", "--", "one", "two", "three", "four", "five",
+          "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen"}},
     };
 
     for (const auto& [name, args] : cases) {

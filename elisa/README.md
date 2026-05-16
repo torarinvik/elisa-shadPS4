@@ -153,11 +153,11 @@ For active dogfooding, the executable also has an opt-in replacement path:
 SHADPS4_ELISA_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true
 ```
 
-This asks Elisa to produce the real `CliState` for the supported small-argv slice. The C++ CLI11 parser
-remains the default and is still used for no-argument help/message-box behavior, argv lists beyond the
-tiny v1 C ABI limit, and invocations with more than one guest argument. That fallback is intentional:
-the current ABI carries only the first guest argument, so we do not pretend it can safely replace full
-argv-vector behavior yet.
+This asks Elisa to produce the real `CliState` for launch invocations. The C++ CLI11 parser remains the
+default and is still used for no-argument help/message-box behavior. The C ABI passes `argc` plus a real
+`argv` pointer into Elisa, so the replacement path can preserve unbounded guest arguments after `--`
+without returning Elisa-owned heap strings. Elisa reports the guest-argument start index and count, and
+C++ reconstructs the vector from the original process argv.
 
 A quick error-path smoke that should exit before runtime setup:
 

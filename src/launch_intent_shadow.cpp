@@ -3,17 +3,40 @@
 
 #include "launch_intent_shadow.h"
 
-#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <vector>
 
 #ifdef SHADPS4_ENABLE_ELISA_PORTS
 #include "shadps4_elisa_launch_intent.h"
 #endif
 
 namespace LaunchIntent {
+
+namespace {
+
+void CaptureShadowGameArgs(Shadow& out, const std::vector<std::string>& args, size_t first_index) {
+    if (args.size() <= first_index) {
+        return;
+    }
+    out.game_arg_count = static_cast<int64_t>(args.size() - first_index);
+    if (out.game_arg_count >= 1) {
+        out.first_game_arg = args[first_index];
+    }
+    if (out.game_arg_count >= 2) {
+        out.second_game_arg = args[first_index + 1];
+    }
+    if (out.game_arg_count >= 3) {
+        out.third_game_arg = args[first_index + 2];
+    }
+    if (out.game_arg_count >= 4) {
+        out.fourth_game_arg = args[first_index + 3];
+    }
+}
+
+} // namespace
 
 Shadow NoArgsShadow() {
     Shadow out{};
@@ -65,10 +88,7 @@ Shadow BuildShadow(const CliState& state) {
     } else if (!state.game_path.has_value()) {
         if (!state.game_args.empty()) {
             out.game_path = state.game_args.front();
-            out.game_arg_count = static_cast<int64_t>(state.game_args.size() - 1);
-            if (state.game_args.size() > 1) {
-                out.first_game_arg = state.game_args[1];
-            }
+            CaptureShadowGameArgs(out, state.game_args, 1);
         } else {
             out.kind = ElisaIntentError;
             out.exit_code = 1;
@@ -77,10 +97,7 @@ Shadow BuildShadow(const CliState& state) {
     } else {
         out.game_path = *state.game_path;
         if (!state.game_args.empty() && state.game_args.front() == "--") {
-            out.game_arg_count = static_cast<int64_t>(state.game_args.size() - 1);
-            if (state.game_args.size() > 1) {
-                out.first_game_arg = state.game_args[1];
-            }
+            CaptureShadowGameArgs(out, state.game_args, 1);
         } else if (!state.game_args.empty()) {
             out.kind = ElisaIntentError;
             out.exit_code = 1;
@@ -112,8 +129,12 @@ bool ElisaIntentMatches(const ShadLaunchIntentCABI& elisa, const Shadow& cpp) {
            std::strcmp(ElisaString(elisa.add_game_folder), cpp.add_game_folder.c_str()) == 0 &&
            std::strcmp(ElisaString(elisa.set_addon_folder), cpp.set_addon_folder.c_str()) == 0 &&
            elisa.fullscreen == cpp.fullscreen && elisa.config_mode == cpp.config_mode &&
-           elisa.wait_pid == cpp.wait_pid && elisa.game_arg_count == cpp.game_arg_count &&
+           elisa.wait_pid == cpp.wait_pid &&
+           elisa.game_arg_count == cpp.game_arg_count &&
            std::strcmp(ElisaString(elisa.first_game_arg), cpp.first_game_arg.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.second_game_arg), cpp.second_game_arg.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.third_game_arg), cpp.third_game_arg.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.fourth_game_arg), cpp.fourth_game_arg.c_str()) == 0 &&
            static_cast<bool>(elisa.ok) == cpp.ok &&
            static_cast<bool>(elisa.ignore_game_patch) == cpp.ignore_game_patch &&
            static_cast<bool>(elisa.show_fps) == cpp.show_fps &&
@@ -126,8 +147,10 @@ std::string DescribeIntent(const Shadow& intent) {
     std::ostringstream out;
     out << "kind=" << intent.kind << " exit=" << intent.exit_code << " ok=" << intent.ok
         << " game='" << intent.game_path << "' patch='" << intent.patch_file << "' fullscreen="
-        << intent.fullscreen << " config=" << intent.config_mode << " game_args="
-        << intent.game_arg_count << " first_arg='" << intent.first_game_arg << "'";
+        << intent.fullscreen << " config=" << intent.config_mode << " game_arg_start="
+        << intent.game_arg_start_index << " game_args=" << intent.game_arg_count << " args=['" << intent.first_game_arg << "','"
+        << intent.second_game_arg << "','" << intent.third_game_arg << "','"
+        << intent.fourth_game_arg << "']";
     return out.str();
 }
 
@@ -136,8 +159,10 @@ std::string DescribeIntent(const ShadLaunchIntentCABI& intent) {
     out << "kind=" << intent.kind << " exit=" << intent.exit_code << " ok=" << intent.ok
         << " game='" << ElisaString(intent.game_path) << "' patch='" << ElisaString(intent.patch_file)
         << "' fullscreen=" << intent.fullscreen << " config=" << intent.config_mode
-        << " game_args=" << intent.game_arg_count << " first_arg='"
-        << ElisaString(intent.first_game_arg) << "'";
+        << " game_arg_start=" << intent.game_arg_start_index << " game_args=" << intent.game_arg_count << " args=['"
+        << ElisaString(intent.first_game_arg) << "','" << ElisaString(intent.second_game_arg)
+        << "','" << ElisaString(intent.third_game_arg) << "','"
+        << ElisaString(intent.fourth_game_arg) << "']";
     return out.str();
 }
 
@@ -147,25 +172,19 @@ void ShadowWithElisa(int argc, char* argv[], const Shadow& cpp) {
     if (!ElisaLaunchIntentShadowEnabled()) {
         return;
     }
-    if (argc < 0 || argc > 13) {
-        std::cerr << "Elisa launch-intent shadow skipped: argc=" << argc
-                  << " exceeds tiny v1 ABI limit\n";
+    if (argc < 0) {
+        std::cerr << "Elisa launch-intent shadow skipped: negative argc=" << argc << "\n";
         return;
     }
 
-    std::array<uint8_t*, 13> elisa_argv{};
-    for (auto& arg : elisa_argv) {
-        arg = reinterpret_cast<uint8_t*>(const_cast<char*>(""));
-    }
+    std::vector<uint8_t*> elisa_argv(static_cast<size_t>(argc));
     for (int i = 0; i < argc; ++i) {
         elisa_argv[static_cast<size_t>(i)] = reinterpret_cast<uint8_t*>(argv[i]);
     }
 
     ShadLaunchIntentCABI elisa{};
     const intptr_t abi_ok = shadps4_elisa_parse_launch_intent(
-        argc, elisa_argv[0], elisa_argv[1], elisa_argv[2], elisa_argv[3], elisa_argv[4],
-        elisa_argv[5], elisa_argv[6], elisa_argv[7], elisa_argv[8], elisa_argv[9],
-        elisa_argv[10], elisa_argv[11], elisa_argv[12], &elisa);
+        argc, elisa_argv.empty() ? nullptr : elisa_argv.data(), &elisa);
     if (!abi_ok || !ElisaIntentMatches(elisa, cpp)) {
         std::cerr << "Elisa launch-intent shadow mismatch:\n  C++:   " << DescribeIntent(cpp)
                   << "\n  Elisa: " << DescribeIntent(elisa) << "\n";

@@ -20,8 +20,12 @@ typedef struct ShadLaunchIntentCABI {
     int64_t fullscreen;
     int64_t config_mode;
     int64_t wait_pid;
+    int64_t game_arg_start_index;
     int64_t game_arg_count;
     uint8_t* first_game_arg;
+    uint8_t* second_game_arg;
+    uint8_t* third_game_arg;
+    uint8_t* fourth_game_arg;
     intptr_t ok;
     intptr_t ignore_game_patch;
     intptr_t show_fps;
@@ -30,11 +34,7 @@ typedef struct ShadLaunchIntentCABI {
     intptr_t has_wait_pid;
 } ShadLaunchIntentCABI;
 
-intptr_t shadps4_elisa_parse_launch_intent(int64_t argc, uint8_t* arg0, uint8_t* arg1,
-                                           uint8_t* arg2, uint8_t* arg3, uint8_t* arg4,
-                                           uint8_t* arg5, uint8_t* arg6, uint8_t* arg7,
-                                           uint8_t* arg8, uint8_t* arg9, uint8_t* arg10,
-                                           uint8_t* arg11, uint8_t* arg12,
+intptr_t shadps4_elisa_parse_launch_intent(int64_t argc, uint8_t** argv,
                                            ShadLaunchIntentCABI* out);
 
 #ifdef __cplusplus

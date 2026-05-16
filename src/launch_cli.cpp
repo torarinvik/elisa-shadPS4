@@ -3,11 +3,11 @@
 
 #include "launch_cli.h"
 
-#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <optional>
+#include <vector>
 
 #include <CLI/CLI.hpp>
 #include <SDL3/SDL_messagebox.h>
@@ -35,24 +35,18 @@ bool ElisaLaunchIntentEnabled() {
 }
 
 std::optional<ParseResult> TryParseWithElisa(int argc, char* argv[]) {
-    if (!ElisaLaunchIntentEnabled() || argc <= 1 || argc > 13) {
+    if (!ElisaLaunchIntentEnabled() || argc <= 1) {
         return std::nullopt;
     }
 
-    std::array<uint8_t*, 13> elisa_argv{};
-    for (auto& arg : elisa_argv) {
-        arg = reinterpret_cast<uint8_t*>(const_cast<char*>(""));
-    }
+    std::vector<uint8_t*> elisa_argv(static_cast<size_t>(argc));
     for (int i = 0; i < argc; ++i) {
         elisa_argv[static_cast<size_t>(i)] = reinterpret_cast<uint8_t*>(argv[i]);
     }
 
     ShadLaunchIntentCABI intent{};
-    const intptr_t abi_ok = shadps4_elisa_parse_launch_intent(
-        argc, elisa_argv[0], elisa_argv[1], elisa_argv[2], elisa_argv[3], elisa_argv[4],
-        elisa_argv[5], elisa_argv[6], elisa_argv[7], elisa_argv[8], elisa_argv[9],
-        elisa_argv[10], elisa_argv[11], elisa_argv[12], &intent);
-    if (!abi_ok || intent.game_arg_count > 1) {
+    const intptr_t abi_ok = shadps4_elisa_parse_launch_intent(argc, elisa_argv.data(), &intent);
+    if (!abi_ok) {
         return std::nullopt;
     }
 
@@ -80,8 +74,15 @@ std::optional<ParseResult> TryParseWithElisa(int argc, char* argv[]) {
         state.game_path = ElisaString(intent.game_path);
     }
 
-    if (intent.game_arg_count == 1) {
-        state.game_args = {"--", ElisaString(intent.first_game_arg)};
+    if (intent.game_arg_count > 0) {
+        if (intent.game_arg_start_index <= 0 ||
+            intent.game_arg_start_index + intent.game_arg_count > argc) {
+            return std::nullopt;
+        }
+        state.game_args = {"--"};
+        for (int64_t i = 0; i < intent.game_arg_count; ++i) {
+            state.game_args.emplace_back(argv[static_cast<size_t>(intent.game_arg_start_index + i)]);
+        }
     }
     if (std::strcmp(ElisaString(intent.patch_file), "") != 0) {
         state.patch_file = ElisaString(intent.patch_file);

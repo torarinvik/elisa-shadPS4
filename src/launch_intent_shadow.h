@@ -37,8 +37,12 @@ struct Shadow {
     int64_t fullscreen = ElisaFullscreenUnset;
     int64_t config_mode = ElisaConfigDefault;
     int64_t wait_pid = 0;
+    int64_t game_arg_start_index = 0;
     int64_t game_arg_count = 0;
     std::string first_game_arg;
+    std::string second_game_arg;
+    std::string third_game_arg;
+    std::string fourth_game_arg;
     bool ok = false;
     bool ignore_game_patch = false;
     bool show_fps = false;
