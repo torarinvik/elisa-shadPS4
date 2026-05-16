@@ -48,6 +48,22 @@ def launch_intent_parses_run_flags() -> void can[Abort.Panic]:
 
 
 @test
+def launch_intent_accepts_positional_game_path_like_main_cpp() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_test_args(4, "shadps4", "CUSA00264", "--show-fps", "--ignore-game-patch", "", "", "", "", "", "", "", "", "")
+        if not intent.ok:
+            panic("expected positional game path intent to be ok")
+        if intent.kind != SHAD_LAUNCH_KIND_RUN:
+            panic("expected positional game path run intent")
+        if not shad_launch_streq(intent.game_path, "CUSA00264"):
+            panic("expected positional game path")
+        if not intent.show_fps:
+            panic("expected positional launch to preserve show fps")
+        if not intent.ignore_game_patch:
+            panic("expected positional launch to preserve ignore game patch")
+
+
+@test
 def launch_intent_parses_utility_commands_before_run() -> void can[Abort.Panic]:
     can Abort.Panic:
         intent: ShadLaunchIntent = shad_launch_parse_test_args(3, "shadps4", "--add-game-folder", "/games", "", "", "", "", "", "", "", "", "", "")

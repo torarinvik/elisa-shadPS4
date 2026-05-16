@@ -132,6 +132,7 @@ int main() {
     const std::vector<std::pair<const char*, std::vector<std::string>>> cases = {
         {"no_args", {"shadps4"}},
         {"normal_game", {"shadps4", "--game", "CUSA00264"}},
+        {"positional_game", {"shadps4", "CUSA00264", "--show-fps"}},
         {"fullscreen_true", {"shadps4", "--game", "CUSA00264", "--fullscreen", "true"}},
         {"fullscreen_false", {"shadps4", "--game", "CUSA00264", "--fullscreen", "false"}},
         {"utility_add_folder", {"shadps4", "--add-game-folder", "/games"}},

@@ -274,7 +274,11 @@ def shad_launch_parse_args(argc: i64, argv: u8&&) -> ShadLaunchIntent:
                                                                             config_mode <- SHAD_CONFIG_GLOBAL
                                                                             index <- index + 1
                                                                         else:
-                                                                            return shad_launch_error(executable, "unhandled flag or argument")
+                                                                            if shad_launch_streq(game_path, ""):
+                                                                                game_path <- arg
+                                                                                index <- index + 1
+                                                                            else:
+                                                                                return shad_launch_error(executable, "unhandled flags")
 
     launch_ok: mutable bool = true
     launch_exit: mutable int = 0
