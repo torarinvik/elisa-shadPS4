@@ -15,9 +15,9 @@
 | [x] | Beast Quest | CUSA09052 | Tested. Starts, plays audio/narrator, then reaches a black screen similar to the UFC black-screen bucket. Also showed startup flicker/distortion. |
 | [x] | SEGA Mega Drive Classics | CUSA09771 | Tested. Reaches the "press button to continue" screen, then enters a black-screen state while audio/game logic continues. No strict render-validation assert was captured in this run; log is dominated by repeated metadata texture-read warnings and net stub spam. |
 | [x] | The Witch and the Hundred Knight 2 | CUSA10135 | not tested |
-| [x] | EA Sports UFC 4 | CUSA14204 | not tested |
-| [x] | Zero Strain | CUSA18570 | not tested |
-| [x] | New Super Lucky's Tale | CUSA20302 | not tested |
+| [x] | EA Sports UFC 4 | CUSA14204 | Tested. Reaches the first loading screen, then aborts in Metal/MoltenVK texture-view validation: source texture is `MTLPixelFormatDepth16Unorm` but the requested view format is `MTLPixelFormatR16Uint`. |
+| [x] | Zero Strain | CUSA18570 | Tested. Exits almost immediately in the known fixed-address mapping bucket: `sceKernelMapNamedDirectMemory` requests `0x4000000000`, which overlaps the macOS Apple-Silicon GPU-reserved address hole, then the game hits an access violation. |
+| [x] | New Super Lucky's Tale | CUSA20302 | Tested. Reaches the start screen; when pressing a button to advance, strict render validation aborts on unsupported `B4G4R4A4UnormPack16` 2D image creation with sampled/color-attachment usage. |
 | [x] | Race With Ryan Road Trip Deluxe Edition | CUSA23279 | not tested |
 | [x] | Katamari Damacy Reroll | CUSA24361 | not tested |
 | [x] | Stray | CUSA24899 | not tested |
@@ -168,7 +168,7 @@ Sorted by approximate PS4 storage size, largest to smallest. Sizes are rough and
 | [ ] | 12 | Resident Evil 4 |
 | [X ] | 11 | The Witch and the Hundred Knight: Revival Edition |
 | [ X] | 10 | SEGA Genesis Classics |
-| [ ] | 10 | Hasbro Family Fun Pack |
+| [X ] | 10 | Hasbro Family Fun Pack |
 | [X ] | 10 | Beast Quest |
 | [ ] | 9 | FINAL FANTASY VI |
 | [ ] | 9 | FINAL FANTASY V |
@@ -176,18 +176,18 @@ Sorted by approximate PS4 storage size, largest to smallest. Sizes are rough and
 | [ ] | 9 | FINAL FANTASY III |
 | [ ] | 9 | FINAL FANTASY II |
 | [ ] | 9 | FINAL FANTASY |
-| [ ] | 8 | Yooka-Laylee |
-| [ ] | 8 | Blair Witch |
+| [ X] | 8 | Yooka-Laylee |
+| [X ] | 8 | Blair Witch |
 | [X ] | 8 | Another Sight |
 | [ X] | 7 | Severed Steel |
-| [ ] | 6 | Overwatch: Origins Edition |
+| [ ] | ? | Overwatch: Origins Edition |
 | [ X] | 6 | Galak-Z |
-| [ ] | 6 | KNACK 2 |
-| [ ] | 6 | Fallout 4 |
+| [ ] | 37.2 | KNACK 2 |
+| [ ] | 36.5 | Fallout 4 |
 | [ X] | 5 | Taxi Chaos |
-| [ ] | 5 | HORROR TALES: The Wine |
+| [ ] | ? | HORROR TALES: The Wine |
 | [ X] | 4 | Minecraft Dungeons |
-| [ ] | 4 | Call of Duty®: Modern Warfare® Remastered |
+| [ ] | 37.2 | Call of Duty®: Modern Warfare® Remastered |
 | [ X] | 3 | Teenage Mutant Ninja Turtles: Shredder's Revenge |
-| [ ] | 2 | Call of Duty®: Black Ops 4 |
+| [ ] | 94 | Call of Duty®: Black Ops 4 |
 | [X ] | 1 | Joe's Diner |
