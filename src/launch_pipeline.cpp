@@ -3,6 +3,7 @@
 
 #include "launch_pipeline.h"
 
+#include <cstdint>
 #include <iostream>
 #include <memory>
 
@@ -21,7 +22,30 @@
 #include "emulator.h"
 #include "imgui/big_picture/big_picture.h"
 
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+#include "elisa/native/shadps4_elisa_debugger.h"
+#endif
+
 namespace LaunchPipeline {
+
+namespace {
+
+void WaitForPidExit(int pid) {
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+    constexpr std::uint32_t poll_ms = 500;
+    constexpr std::int64_t max_polls = 7200; // One hour keeps restart waits finite and visible.
+    std::cerr << "Waiting for process " << pid << " to exit..." << std::endl;
+    if (shadps4_elisa_wait_for_pid_exit(pid, poll_ms, max_polls)) {
+        return;
+    }
+    std::cerr << "Timed out waiting for process " << pid
+              << " to exit; continuing launch anyway." << std::endl;
+#else
+    Core::Debugger::WaitForPid(pid);
+#endif
+}
+
+} // namespace
 
 void InitializeRuntimeSettings() {
     // Start default log before user settings can redirect or append to the configured log.
@@ -173,7 +197,7 @@ void RunEmulator(const char* executable_name, bool wait_for_debugger,
 
 int RunParsedLaunch(const char* executable_name, LaunchIntent::CliState state) {
     if (state.wait_pid) {
-        Core::Debugger::WaitForPid(*state.wait_pid);
+        WaitForPidExit(*state.wait_pid);
     }
 
     InitializeRuntimeSettings();

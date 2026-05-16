@@ -21,6 +21,12 @@
       "emit": "c-archive",
       "output": "build/libshadps4_elisa_launch_intent.a",
       "opt": "O0"
+    },
+    "debugger_abi": {
+      "entry": "src/debugger.elisa",
+      "emit": "c-archive",
+      "output": "build/libshadps4_elisa_debugger.a",
+      "opt": "O0"
     }
   }
 }
