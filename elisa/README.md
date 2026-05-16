@@ -77,6 +77,69 @@ unsafe/high-risk leaf remains `Core::Emulator::Run` and the renderer stack below
 slice is to define an Elisa `LaunchIntent` mirroring the parsed CLI state, test it with fixture args,
 then pass that intent through a narrow C++ bridge while keeping actual emulator execution in C++.
 
+The first root-port slice now lives in `src/launch_intent.elisa`. It mirrors the safe, root-adjacent
+policy from `src/main.cpp`: no-args behavior, `--game`/`--patch`/`--fullscreen`, utility commands,
+config-mode selection, debugger wait flags, log append, and guest args after `--`. It deliberately
+does not touch filesystem resolution or `Core::Emulator::Run`; those remain C++ until the pure
+`ShadLaunchIntent` layer has enough fixture coverage to become the handoff contract.
+
+The launch-intent module also exposes a small C ABI, but shadPS4 does not need to build against a
+generated Elisa header. The intended integration shape is now a static archive:
+
+```sh
+go run ./src -emit c-archive -o ../shadPS4/elisa/build/libshadps4_elisa_launch_intent.a ../shadPS4/elisa/src/launch_intent.elisa
+go run ./src build launch_intent_abi --project ../shadPS4/elisa
+```
+
+Cross-architecture CMake builds pass an explicit LLVM target triple into the archive builder. You can
+also do that by hand from the Elisa-core `compiler` directory:
+
+```sh
+go run ./src build launch_intent_abi --project ../shadPS4/elisa -target-triple arm64-apple-macosx15.4
+go run ./src build launch_intent_abi --project ../shadPS4/elisa -target-triple x86_64-apple-macosx15.4
+```
+
+That archive contains the Elisa object plus the default Elisa runtime object when needed. C++ includes
+the reviewed stable declaration in `native/shadps4_elisa_launch_intent.h`; generated headers are not
+part of the build contract. Header emission remains useful as an ABI audit tool:
+
+```sh
+go run ./src -emit header -o /tmp/launch_intent.h ../shadPS4/elisa/src/launch_intent.elisa
+```
+
+but generated headers should be compared against the checked-in C ABI, not treated as an implicit
+build dependency. Larger Elisa-owned records cross the boundary through caller-provided output
+storage, so the compiler does not need platform-specific large-struct return lowering.
+
+The semantic header drift check compares the checked-in C ABI header against the generated audit
+header while ignoring harmless parameter-name and whitespace differences:
+
+```sh
+python3 ../shadPS4/elisa/native/check_c_abi_header.py \
+  ../shadPS4/elisa/native/shadps4_elisa_launch_intent.h \
+  ../shadPS4/elisa/build/libshadps4_elisa_launch_intent.h
+```
+
+Stable C ABI rules for incremental ports:
+
+- Do not return large structs by value; pass caller-owned output storage.
+- Use fixed-width integers or pointer-compatible fields at the boundary.
+- Do not return Elisa-owned heap pointers unless a matching destroy/free function is exported.
+- Keep checked-in C/C++ headers as the integration contract; generated headers are drift/audit tools.
+
+For shadPS4 CMake dogfooding, configure with:
+
+```sh
+cmake -S . -B build-elisa -DSHADPS4_ENABLE_ELISA_PORTS=ON
+cmake --build build-elisa --target shadps4_elisa_launch_intent_abi_check
+cmake --build build-elisa --target shadps4_elisa_launch_intent_smoke
+./build-elisa/shadps4_elisa_launch_intent_smoke
+```
+
+On macOS, `cmake/Elisa.cmake` infers `arm64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` or
+`x86_64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` from `CMAKE_OSX_ARCHITECTURES`, so opt-in Elisa
+archives match the C++ build architecture instead of accidentally reusing the compiler host arch.
+
 The native C bridge deliberately does not decide profile policy for new Elisa callers. Elisa
 constructs a `TraceProfile` with explicit booleans such as `null_fmask_reads`,
 `fmask_decompress_in_place`, `compositor_null_layer`, and `videoout_unorm`; C only applies those

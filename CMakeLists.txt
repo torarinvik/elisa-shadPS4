@@ -36,6 +36,11 @@ endif()
 option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
+option(SHADPS4_ENABLE_ELISA_PORTS "Build opt-in Elisa C ABI porting modules and smoke tests" OFF)
+
+if (SHADPS4_ENABLE_ELISA_PORTS)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Elisa.cmake")
+endif()
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
 if (APPLE AND CMAKE_OSX_ARCHITECTURES)
@@ -1170,6 +1175,18 @@ target_link_libraries(shadps4 PRIVATE spdlog::spdlog)
 target_link_libraries(shadps4 PRIVATE magic_enum::magic_enum fmt::fmt toml11::toml11 tsl::robin_map xbyak::xbyak Tracy::TracyClient RenderDoc::API FFmpeg::ffmpeg Dear_ImGui ImGuiFileDialog gcn half::half ZLIB::ZLIB PNG::PNG minimp3)
 target_link_libraries(shadps4 PRIVATE Boost::headers GPUOpen::VulkanMemoryAllocator LibAtrac9 sirit Vulkan::Headers xxHash::xxhash Zydis::Zydis glslang::glslang SDL3::SDL3 pugixml::pugixml)
 target_link_libraries(shadps4 PRIVATE stb::headers lfreist-hwinfo::hwinfo nlohmann_json::nlohmann_json miniz::miniz fdk-aac CLI11::CLI11 OpenAL::OpenAL Cpp_Httplib)
+
+if (SHADPS4_ENABLE_ELISA_PORTS)
+    elisa_add_module(shadps4_elisa_launch_intent
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/elisa/src/launch_intent.elisa"
+        ABI_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/elisa/native/shadps4_elisa_launch_intent.h"
+        OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/elisa")
+    target_link_libraries(shadps4 PRIVATE shadps4_elisa_launch_intent)
+
+    add_executable(shadps4_elisa_launch_intent_smoke
+        elisa/native/launch_intent_smoke.cpp)
+    target_link_libraries(shadps4_elisa_launch_intent_smoke PRIVATE shadps4_elisa_launch_intent CLI11::CLI11)
+endif()
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
     target_link_libraries(shadps4 PRIVATE "/usr/lib/libusb.so")

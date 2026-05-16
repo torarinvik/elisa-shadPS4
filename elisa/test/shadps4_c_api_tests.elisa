@@ -1,4 +1,5 @@
 include "../src/ufc_trace.elisa"
+include "../src/launch_intent.elisa"
 include "ufc_trace_fixture.elisa"
 
 extern shadps4_elisa_probe_value() -> i64
@@ -12,6 +13,82 @@ def shadps4_c_api_probe_value_round_trips() -> void can[Abort.Panic]:
             probe_value <- shadps4_elisa_probe_value()
         if probe_value != 4242:
             panic("expected shadPS4 C API probe value")
+
+
+@test
+def launch_intent_no_args_matches_main_cpp_policy() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_args(1, "shadps4", "", "", "", "", "", "", "", "", "", "", "", "")
+        if not intent.ok:
+            panic("expected no-args intent to be ok")
+        if intent.kind != SHAD_LAUNCH_KIND_NO_ARGS:
+            panic("expected no-args intent kind")
+        if intent.exit_code != -1:
+            panic("expected no-args exit code")
+
+
+@test
+def launch_intent_parses_run_flags() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_args(9, "shadps4", "-g", "CUSA00264", "-p", "patch.toml", "-f", "true", "--show-fps", "--ignore-game-patch", "", "", "", "")
+        if not intent.ok:
+            panic("expected run intent to be ok")
+        if intent.kind != SHAD_LAUNCH_KIND_RUN:
+            panic("expected run intent")
+        if not shad_launch_streq(intent.game_path, "CUSA00264"):
+            panic("expected game path")
+        if not shad_launch_streq(intent.patch_file, "patch.toml"):
+            panic("expected patch file")
+        if intent.fullscreen != SHAD_FULLSCREEN_TRUE:
+            panic("expected fullscreen true")
+        if not intent.show_fps:
+            panic("expected show fps")
+        if not intent.ignore_game_patch:
+            panic("expected ignore game patch")
+
+
+@test
+def launch_intent_parses_utility_commands_before_run() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_args(3, "shadps4", "--add-game-folder", "/games", "", "", "", "", "", "", "", "", "", "")
+        if not intent.ok:
+            panic("expected add-game-folder intent to be ok")
+        if intent.kind != SHAD_LAUNCH_KIND_ADD_GAME_FOLDER:
+            panic("expected add-game-folder kind")
+        if not shad_launch_streq(intent.add_game_folder, "/games"):
+            panic("expected add-game-folder path")
+
+
+@test
+def launch_intent_rejects_invalid_fullscreen() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_args(5, "shadps4", "-g", "CUSA00264", "--fullscreen", "maybe", "", "", "", "", "", "", "", "")
+        if intent.ok:
+            panic("expected invalid fullscreen to fail")
+        if intent.kind != SHAD_LAUNCH_KIND_ERROR:
+            panic("expected error kind")
+
+
+@test
+def launch_intent_tracks_game_args_after_double_dash() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_args(6, "shadps4", "-g", "CUSA00264", "--", "--guest-flag", "value", "", "", "", "", "", "", "")
+        if not intent.ok:
+            panic("expected run intent to be ok")
+        if intent.game_arg_count != 2:
+            panic("expected two guest args")
+        if not shad_launch_streq(intent.first_game_arg, "--guest-flag"):
+            panic("expected first guest arg")
+
+
+@test
+def launch_intent_config_global_wins_like_main_cpp() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_args(5, "shadps4", "-g", "CUSA00264", "--config-clean", "--config-global", "", "", "", "", "", "", "", "")
+        if not intent.ok:
+            panic("expected config conflict shape to follow C++ last-write policy")
+        if intent.config_mode != SHAD_CONFIG_GLOBAL:
+            panic("expected config global to win")
 
 
 @test

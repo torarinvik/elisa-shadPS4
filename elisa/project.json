@@ -15,6 +15,12 @@
       "emit": "llvm",
       "output": "build/shadps4_c_api_tests.ll",
       "opt": "O0"
+    },
+    "launch_intent_abi": {
+      "entry": "src/launch_intent.elisa",
+      "emit": "c-archive",
+      "output": "build/libshadps4_elisa_launch_intent.a",
+      "opt": "O0"
     }
   }
 }
