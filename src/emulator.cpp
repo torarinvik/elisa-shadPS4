@@ -25,7 +25,9 @@
 #include "common/polyfill_thread.h"
 #include "common/scm_rev.h"
 #include "common/singleton.h"
+#ifndef SHADPS4_ENABLE_ELISA_PORTS
 #include "core/debugger.h"
+#endif
 #include "core/devtools/widget/module_list.h"
 #include "core/emulator_settings.h"
 #include "core/emulator_state.h"
@@ -71,6 +73,17 @@ int CurrentPidForRestart() {
 #endif
 }
 
+void WaitForDebuggerAttachForRun() {
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+    constexpr std::uint32_t poll_ms = 200;
+    constexpr std::int64_t max_polls = -1;
+    std::cerr << "Waiting for debugger to attach..." << std::endl;
+    shadps4_elisa_wait_for_debugger_attach(poll_ms, max_polls);
+#else
+    Debugger::WaitForDebuggerAttach();
+#endif
+}
+
 } // namespace
 
 Emulator::Emulator() {
@@ -111,7 +124,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
                    std::optional<std::filesystem::path> p_game_folder) {
     Common::SetCurrentThreadName("shadPS4:Main");
     if (waitForDebuggerBeforeRun) {
-        Debugger::WaitForDebuggerAttach();
+        WaitForDebuggerAttachForRun();
     }
 
     if (std::filesystem::is_directory(file)) {

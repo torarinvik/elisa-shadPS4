@@ -26,6 +26,18 @@ int main() {
         return 1;
     }
 
+    const intptr_t debugger_attached = shadps4_elisa_is_debugger_attached();
+    if (debugger_attached != 0 && debugger_attached != 1) {
+        std::cerr << "expected debugger-attached probe to return a bool-like value, got "
+                  << debugger_attached << "\n";
+        return 1;
+    }
+
+    if (shadps4_elisa_wait_for_debugger_attach(1, 0) != debugger_attached) {
+        std::cerr << "expected zero-poll debugger wait to match direct debugger probe\n";
+        return 1;
+    }
+
     std::cout << "Elisa debugger FFI smoke ok\n";
     return 0;
 }

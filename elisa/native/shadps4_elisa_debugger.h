@@ -9,7 +9,9 @@ extern "C" {
 
 intptr_t shadps4_elisa_current_pid(void);
 intptr_t shadps4_elisa_process_exists(intptr_t pid);
+intptr_t shadps4_elisa_is_debugger_attached(void);
 intptr_t shadps4_elisa_wait_for_pid_exit(intptr_t pid, uint32_t poll_ms, int64_t max_polls);
+intptr_t shadps4_elisa_wait_for_debugger_attach(uint32_t poll_ms, int64_t max_polls);
 
 #ifdef __cplusplus
 }
