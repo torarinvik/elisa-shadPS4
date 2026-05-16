@@ -278,15 +278,22 @@ def shad_launch_parse_args(argc: i64, arg0: cstr, arg1: cstr, arg2: cstr, arg3: 
 
     if argc > 13:
         return shad_launch_error(arg0, "too many arguments for Elisa launch-intent parser slice")
+    launch_ok: mutable bool = true
+    launch_exit: mutable int = 0
+    launch_fullscreen: mutable i64 = fullscreen
     if fullscreen == SHAD_FULLSCREEN_INVALID:
-        return shad_launch_error(arg0, "invalid argument for --fullscreen")
+        launch_ok <- false
+        launch_exit <- 1
+        launch_fullscreen <- SHAD_FULLSCREEN_UNSET
     if not shad_launch_streq(add_game_folder, ""):
-        return ShadLaunchIntent(SHAD_LAUNCH_KIND_ADD_GAME_FOLDER, 0, arg0, "", "", patch_file, override_root, add_game_folder, "", fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, true, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
+        return ShadLaunchIntent(SHAD_LAUNCH_KIND_ADD_GAME_FOLDER, launch_exit, arg0, "", "", patch_file, override_root, add_game_folder, "", launch_fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, launch_ok, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
     if not shad_launch_streq(set_addon_folder, ""):
-        return ShadLaunchIntent(SHAD_LAUNCH_KIND_SET_ADDON_FOLDER, 0, arg0, "", "", patch_file, override_root, "", set_addon_folder, fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, true, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
+        return ShadLaunchIntent(SHAD_LAUNCH_KIND_SET_ADDON_FOLDER, launch_exit, arg0, "", "", patch_file, override_root, "", set_addon_folder, launch_fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, launch_ok, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
     if shad_launch_streq(game_path, ""):
         return shad_launch_error(arg0, "please provide a game path or ID")
-    return ShadLaunchIntent(SHAD_LAUNCH_KIND_RUN, 0, arg0, "", game_path, patch_file, override_root, "", "", fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, true, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
+    if not launch_ok:
+        return ShadLaunchIntent(SHAD_LAUNCH_KIND_ERROR, launch_exit, arg0, "invalid argument for --fullscreen", game_path, patch_file, override_root, "", "", launch_fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, false, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
+    return ShadLaunchIntent(SHAD_LAUNCH_KIND_RUN, launch_exit, arg0, "", game_path, patch_file, override_root, "", "", launch_fullscreen, config_mode, wait_pid, game_arg_count, first_game_arg, launch_ok, ignore_game_patch, show_fps, log_append, wait_for_debugger, has_wait_pid)
 
 def shadps4_elisa_parse_launch_intent_impl(argc: i64, arg0: u8&, arg1: u8&, arg2: u8&, arg3: u8&, arg4: u8&, arg5: u8&, arg6: u8&, arg7: u8&, arg8: u8&, arg9: u8&, arg10: u8&, arg11: u8&, arg12: u8&, out: mutable ShadLaunchIntentFFI&) -> int:
     intent: ShadLaunchIntent = shad_launch_parse_args(argc, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)

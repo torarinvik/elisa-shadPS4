@@ -2,6 +2,8 @@
 
 #include <CLI/CLI.hpp>
 
+#include "launch_intent_shadow.h"
+
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -11,42 +13,9 @@
 
 namespace {
 
-constexpr int64_t KindRun = 0;
-constexpr int64_t KindNoArgs = 1;
-constexpr int64_t KindBigPicture = 2;
-constexpr int64_t KindAddGameFolder = 3;
-constexpr int64_t KindSetAddonFolder = 4;
-constexpr int64_t KindError = 5;
-
-constexpr int64_t FullscreenUnset = 0;
-constexpr int64_t FullscreenTrue = 1;
-constexpr int64_t FullscreenFalse = 2;
-
-constexpr int64_t ConfigDefault = 0;
-constexpr int64_t ConfigClean = 1;
-constexpr int64_t ConfigGlobal = 2;
-
-struct ShadowIntent {
-    int64_t kind = KindError;
-    int exit_code = 1;
-    std::string game_path;
-    std::string patch_file;
-    std::string add_game_folder;
-    std::string set_addon_folder;
-    int64_t fullscreen = FullscreenUnset;
-    int64_t config_mode = ConfigDefault;
-    int64_t game_arg_count = 0;
-    std::string first_game_arg;
-    bool ok = false;
-    bool ignore_game_patch = false;
-    bool show_fps = false;
-    bool log_append = false;
-    bool wait_for_debugger = false;
-};
-
-ShadowIntent ParseCppShadow(const std::vector<std::string>& args) {
+LaunchIntent::Shadow ParseCppShadow(const std::vector<std::string>& args) {
     if (args.size() <= 1) {
-        return ShadowIntent{.kind = KindNoArgs, .exit_code = -1, .ok = true};
+        return LaunchIntent::NoArgsShadow();
     }
 
     CLI::App app{"shadPS4 Emulator CLI shadow"};
@@ -92,100 +61,46 @@ ShadowIntent ParseCppShadow(const std::vector<std::string>& args) {
     try {
         app.parse(static_cast<int>(argv.size()), argv.data());
     } catch (const CLI::ParseError&) {
-        return ShadowIntent{};
+        return LaunchIntent::Shadow{};
     }
 
-    ShadowIntent out{};
-    out.exit_code = 0;
-    out.ok = true;
-    out.ignore_game_patch = ignore_game_patch;
-    out.show_fps = show_fps;
-    out.log_append = log_append;
-    out.wait_for_debugger = wait_for_debugger;
-    out.patch_file = patch_file.value_or("");
-    out.fullscreen = FullscreenUnset;
-    out.config_mode = ConfigDefault;
-
-    if (big_picture) {
-        out.kind = KindBigPicture;
-        return out;
-    }
-    if (add_game_folder) {
-        out.kind = KindAddGameFolder;
-        out.add_game_folder = *add_game_folder;
-        return out;
-    }
-    if (set_addon_folder) {
-        out.kind = KindSetAddonFolder;
-        out.set_addon_folder = *set_addon_folder;
-        return out;
-    }
-    if (!game_path) {
-        if (!game_args.empty()) {
-            game_path = game_args.front();
-            game_args.erase(game_args.begin());
-        } else {
-            out.kind = KindError;
-            out.exit_code = 1;
-            out.ok = false;
-            return out;
-        }
-    }
-    if (!game_args.empty()) {
-        if (game_args.front() == "--") {
-            game_args.erase(game_args.begin());
-        } else {
-            out.kind = KindError;
-            out.exit_code = 1;
-            out.ok = false;
-            return out;
-        }
-    }
-    if (fullscreen_str) {
-        if (*fullscreen_str == "true") {
-            out.fullscreen = FullscreenTrue;
-        } else if (*fullscreen_str == "false") {
-            out.fullscreen = FullscreenFalse;
-        } else {
-            out.kind = KindError;
-            out.exit_code = 1;
-            out.ok = false;
-            return out;
-        }
-    }
-    if (config_clean) {
-        out.config_mode = ConfigClean;
-    }
-    if (config_global) {
-        out.config_mode = ConfigGlobal;
-    }
-
-    out.kind = KindRun;
-    out.game_path = *game_path;
-    out.game_arg_count = static_cast<int64_t>(game_args.size());
-    if (!game_args.empty()) {
-        out.first_game_arg = game_args.front();
-    }
-    return out;
+    return LaunchIntent::BuildShadow({
+        .game_path = game_path,
+        .game_args = game_args,
+        .wait_for_debugger = wait_for_debugger,
+        .fullscreen = fullscreen_str,
+        .ignore_game_patch = ignore_game_patch,
+        .show_fps = show_fps,
+        .config_clean = config_clean,
+        .config_global = config_global,
+        .big_picture = big_picture,
+        .add_game_folder = add_game_folder,
+        .set_addon_folder = set_addon_folder,
+        .patch_file = patch_file,
+        .log_append = log_append,
+    });
 }
 
 const char* PtrToString(uint8_t* ptr) {
     return ptr != nullptr ? reinterpret_cast<const char*>(ptr) : "";
 }
 
-bool Matches(const ShadLaunchIntentCABI& elisa, const ShadowIntent& cpp) {
+bool Matches(const ShadLaunchIntentCABI& elisa, const LaunchIntent::Shadow& cpp) {
     return elisa.kind == cpp.kind && elisa.exit_code == cpp.exit_code && elisa.ok == cpp.ok &&
            std::strcmp(PtrToString(elisa.game_path), cpp.game_path.c_str()) == 0 &&
            std::strcmp(PtrToString(elisa.patch_file), cpp.patch_file.c_str()) == 0 &&
+           std::strcmp(PtrToString(elisa.override_root), cpp.override_root.c_str()) == 0 &&
            std::strcmp(PtrToString(elisa.add_game_folder), cpp.add_game_folder.c_str()) == 0 &&
            std::strcmp(PtrToString(elisa.set_addon_folder), cpp.set_addon_folder.c_str()) == 0 &&
            elisa.fullscreen == cpp.fullscreen && elisa.config_mode == cpp.config_mode &&
+           elisa.wait_pid == cpp.wait_pid &&
            elisa.game_arg_count == cpp.game_arg_count &&
            std::strcmp(PtrToString(elisa.first_game_arg), cpp.first_game_arg.c_str()) == 0 &&
            static_cast<bool>(elisa.ignore_game_patch) == cpp.ignore_game_patch &&
            static_cast<bool>(elisa.show_fps) == cpp.show_fps &&
            static_cast<bool>(elisa.log_append) == cpp.log_append &&
-           static_cast<bool>(elisa.wait_for_debugger) == cpp.wait_for_debugger;
+           static_cast<bool>(elisa.wait_for_debugger) == cpp.wait_for_debugger &&
+           static_cast<bool>(elisa.has_wait_pid) == cpp.has_wait_pid;
 }
 
 bool RunCase(const char* name, const std::vector<std::string>& args) {
@@ -198,7 +113,7 @@ bool RunCase(const char* name, const std::vector<std::string>& args) {
     const intptr_t abi_ok = shadps4_elisa_parse_launch_intent(
         static_cast<int64_t>(args.size()), argv[0], argv[1], argv[2], argv[3], argv[4], argv[5],
         argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], &elisa);
-    const ShadowIntent cpp = ParseCppShadow(args);
+    const LaunchIntent::Shadow cpp = ParseCppShadow(args);
     if (!abi_ok || !Matches(elisa, cpp)) {
         std::cerr << "Launch-intent shadow mismatch in " << name << ": abi_ok=" << abi_ok
                   << " elisa.kind=" << elisa.kind << " cpp.kind=" << cpp.kind

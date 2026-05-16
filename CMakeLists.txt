@@ -1162,6 +1162,8 @@ add_executable(shadps4
     ${SHADER_RECOMPILER}
     ${VIDEO_CORE}
     ${EMULATOR}
+    src/launch_intent_shadow.cpp
+    src/launch_intent_shadow.h
     src/main.cpp
     src/emulator.cpp
     src/emulator.h
@@ -1185,7 +1187,10 @@ if (SHADPS4_ENABLE_ELISA_PORTS)
     target_compile_definitions(shadps4 PRIVATE SHADPS4_ENABLE_ELISA_PORTS=1)
 
     add_executable(shadps4_elisa_launch_intent_smoke
+        src/launch_intent_shadow.cpp
         elisa/native/launch_intent_smoke.cpp)
+    target_compile_definitions(shadps4_elisa_launch_intent_smoke PRIVATE SHADPS4_ENABLE_ELISA_PORTS=1)
+    target_include_directories(shadps4_elisa_launch_intent_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(shadps4_elisa_launch_intent_smoke PRIVATE shadps4_elisa_launch_intent CLI11::CLI11)
 endif()
 

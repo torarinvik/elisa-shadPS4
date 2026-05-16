@@ -67,6 +67,8 @@ def launch_intent_rejects_invalid_fullscreen() -> void can[Abort.Panic]:
             panic("expected invalid fullscreen to fail")
         if intent.kind != SHAD_LAUNCH_KIND_ERROR:
             panic("expected error kind")
+        if not shad_launch_streq(intent.game_path, "CUSA00264"):
+            panic("expected invalid fullscreen to preserve parsed game path like main.cpp")
 
 
 @test
