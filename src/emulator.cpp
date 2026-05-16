@@ -43,6 +43,10 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderdoc.h"
 
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+#include "elisa/native/shadps4_elisa_debugger.h"
+#endif
+
 #ifdef _WIN32
 #include <WinSock2.h>
 #endif
@@ -56,6 +60,18 @@
 Frontend::WindowSDL* g_window = nullptr;
 
 namespace Core {
+
+namespace {
+
+int CurrentPidForRestart() {
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+    return static_cast<int>(shadps4_elisa_current_pid());
+#else
+    return Debugger::GetCurrentPid();
+#endif
+}
+
+} // namespace
 
 Emulator::Emulator() {
     // Initialize NT API functions, set high priority and disable WER
@@ -521,7 +537,7 @@ void Emulator::Restart(std::filesystem::path eboot_path,
     }
 
     args.push_back("--wait-for-pid");
-    args.push_back(std::to_string(Debugger::GetCurrentPid()));
+    args.push_back(std::to_string(CurrentPidForRestart()));
 
     if (waitForDebuggerBeforeRun) {
         args.push_back("--wait-for-debugger");
