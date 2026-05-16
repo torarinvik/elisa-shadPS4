@@ -15,6 +15,7 @@
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "common/path_util.h"
+#include "core/debugger.h"
 #include "core/file_sys/fs.h"
 #include "core/ipc/ipc.h"
 #include "emulator.h"
@@ -168,6 +169,37 @@ void RunEmulator(const char* executable_name, bool wait_for_debugger,
     emulator->executableName = executable_name;
     emulator->waitForDebuggerBeforeRun = wait_for_debugger;
     emulator->Run(eboot_path, game_args, override_root);
+}
+
+int RunParsedLaunch(const char* executable_name, LaunchIntent::CliState state) {
+    if (state.wait_pid) {
+        Core::Debugger::WaitForPid(*state.wait_pid);
+    }
+
+    InitializeRuntimeSettings();
+
+    if (HandleUtilityCommand(state.big_picture, const_cast<char*>(executable_name),
+                             state.add_game_folder, state.set_addon_folder)) {
+        return 0;
+    }
+
+    if (!NormalizeGamePathAndArgs(state.game_path, state.game_args)) {
+        return 1;
+    }
+
+    if (!ApplyLaunchFlags(state.patch_file, state.ignore_game_patch, state.fullscreen,
+                          state.show_fps, state.config_clean, state.config_global)) {
+        return 1;
+    }
+
+    const auto eboot_path = ResolveGamePathOrId(*state.game_path);
+    if (!eboot_path) {
+        return 1;
+    }
+
+    RunEmulator(executable_name, state.wait_for_debugger, *eboot_path, state.game_args,
+                state.override_root);
+    return 0;
 }
 
 } // namespace LaunchPipeline

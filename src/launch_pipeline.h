@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "launch_intent_shadow.h"
+
 namespace LaunchPipeline {
 
 void InitializeRuntimeSettings();
@@ -29,5 +31,7 @@ void RunEmulator(const char* executable_name, bool wait_for_debugger,
                  const std::filesystem::path& eboot_path,
                  const std::vector<std::string>& game_args,
                  const std::optional<std::filesystem::path>& override_root);
+
+int RunParsedLaunch(const char* executable_name, LaunchIntent::CliState state);
 
 } // namespace LaunchPipeline
