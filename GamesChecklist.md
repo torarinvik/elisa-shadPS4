@@ -9,7 +9,7 @@
 | [x] | Hasbro Family Fun Pack | CUSA03312 | Tested. Initially quit when entering fullscreen; after macOS permission/restart it ran further. Needs current retest for exact playable state. |
 | [x] | Joe's Diner | CUSA03774 | Tested. Starts and accepts movement input from arrow keys/left stick, but expected keyboard button bindings such as X/C/Z did not work. Needs input mapping follow-up. |
 | [x] | Yooka-Laylee | CUSA05721 | Tested. Boots into scene/menu path, but has severe flicker/distortion/missing geometry and did not advance from the "press X" prompt with keyboard X. |
-| [x] | Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | not tested |
+| [x] | Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | Tested. Boots and reaches in-game visual-novel scenes. Input combo prompt `R1 + Square` maps to keyboard `U + Z`; game appeared to work normally during the initial test. |
 | [x] | UFC 3 | CUSA06534 | Tested. Reaches the loading percentage screen, then strict render validation aborts on an out-of-bounds image view request: `R16G16B16A16Uint` image has 1 layer but the view requests `base_layer=2`. |
 | [x] | UFC 3 Patch v1.14 | CUSA06534-patch | Patch folder; not tested independently. |
 | [x] | Beast Quest | CUSA09052 | Tested. Starts, plays audio/narrator, then reaches a black screen similar to the UFC black-screen bucket. Also showed startup flicker/distortion. |
