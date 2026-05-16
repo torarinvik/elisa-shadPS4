@@ -3,24 +3,14 @@
 
 #include <filesystem>
 #include <iostream>
-#include <memory>
 #include <optional>
 #include <vector>
 #include <CLI/CLI.hpp>
 #include <SDL3/SDL_messagebox.h>
 
-#include <core/emulator_settings.h>
-#include <core/emulator_state.h>
-#include "common/config.h"
-#include "common/key_manager.h"
 #include "common/logging/log.h"
-#include "common/memory_patcher.h"
-#include "common/path_util.h"
 #include "core/debugger.h"
-#include "core/file_sys/fs.h"
-#include "core/ipc/ipc.h"
-#include "emulator.h"
-#include "imgui/big_picture/big_picture.h"
+#include "launch_pipeline.h"
 #include "launch_intent_shadow.h"
 
 #ifdef _WIN32
@@ -125,129 +115,27 @@ int main(int argc, char* argv[]) {
     if (waitPid)
         Core::Debugger::WaitForPid(*waitPid);
 
-    // Start default log
-    Common::Log::Setup("shad_log.txt");
+    LaunchPipeline::InitializeRuntimeSettings();
 
-    IPC::Instance().Init();
-
-    auto emu_state = std::make_shared<EmulatorState>();
-    EmulatorState::SetInstance(emu_state);
-    UserSettings.Load();
-
-    const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
-    Config::load(user_dir / "config.toml");
-
-    // ---- Trophy key migration ----
-    auto key_manager = KeyManager::GetInstance();
-    key_manager->LoadFromFile();
-    if (key_manager->GetAllKeys().TrophyKeySet.ReleaseTrophyKey.empty() &&
-        !Config::getTrophyKey().empty()) {
-        auto keys = key_manager->GetAllKeys();
-        if (keys.TrophyKeySet.ReleaseTrophyKey.empty() && !Config::getTrophyKey().empty()) {
-            keys.TrophyKeySet.ReleaseTrophyKey =
-                KeyManager::HexStringToBytes(Config::getTrophyKey());
-            key_manager->SetAllKeys(keys);
-            key_manager->SaveToFile();
-        }
-    }
-
-    // Load configurations
-    std::shared_ptr<EmulatorSettingsImpl> emu_settings = std::make_shared<EmulatorSettingsImpl>();
-    EmulatorSettingsImpl::SetInstance(emu_settings);
-    emu_settings->Load();
-
-    Common::Log::Shutdown();
-    // Start configured log
-    Common::Log::g_should_append |= EmulatorSettings.IsLogAppend();
-    Common::Log::Setup("shad_log.txt");
-
-    if (bigPicture) {
-        BigPictureMode::Launch(argv[0]);
+    if (LaunchPipeline::HandleUtilityCommand(bigPicture, argv[0], addGameFolder, setAddonFolder)) {
         return 0;
     }
 
-    // ---- Utility commands ----
-    if (addGameFolder) {
-        EmulatorSettings.AddGameInstallDir(*addGameFolder);
-        EmulatorSettings.Save();
-        std::cout << "Game folder successfully saved.\n";
-        return 0;
+    if (!LaunchPipeline::NormalizeGamePathAndArgs(gamePath, gameArgs)) {
+        return 1;
     }
 
-    if (setAddonFolder) {
-        EmulatorSettings.SetAddonInstallDir(*setAddonFolder);
-        EmulatorSettings.Save();
-        std::cout << "Addon folder successfully saved.\n";
-        return 0;
+    if (!LaunchPipeline::ApplyLaunchFlags(patchFile, ignoreGamePatch, fullscreenStr, showFps,
+                                          configClean, configGlobal)) {
+        return 1;
     }
 
-    if (!gamePath.has_value()) {
-        if (!gameArgs.empty()) {
-            gamePath = gameArgs.front();
-            gameArgs.erase(gameArgs.begin());
-        } else {
-            std::cerr << "Error: Please provide a game path or ID.\n";
-            return 1;
-        }
-    }
-    if (!gameArgs.empty()) {
-        if (gameArgs.front() == "--") {
-            gameArgs.erase(gameArgs.begin());
-        } else {
-            std::cerr << "Error: unhandled flags\n";
-            return 1;
-        }
+    const auto ebootPath = LaunchPipeline::ResolveGamePathOrId(*gamePath);
+    if (!ebootPath) {
+        return 1;
     }
 
-    // ---- Apply flags ----
-    if (patchFile)
-        MemoryPatcher::patch_file = *patchFile;
-
-    if (ignoreGamePatch)
-        Core::FileSys::MntPoints::ignore_game_patches = true;
-
-    if (fullscreenStr) {
-        if (*fullscreenStr == "true") {
-            EmulatorSettings.SetFullScreen(true);
-        } else if (*fullscreenStr == "false") {
-            EmulatorSettings.SetFullScreen(false);
-        } else {
-            std::cerr << "Error: Invalid argument for --fullscreen (use true|false)\n";
-            return 1;
-        }
-    }
-
-    if (showFps)
-        EmulatorSettings.SetShowFpsCounter(true);
-
-    if (configClean)
-        EmulatorSettings.SetConfigMode(ConfigMode::Clean);
-
-    if (configGlobal)
-        EmulatorSettings.SetConfigMode(ConfigMode::Global);
-
-    // ---- Resolve game path or ID ----
-    std::filesystem::path ebootPath(*gamePath);
-    if (!std::filesystem::exists(ebootPath)) {
-        bool found = false;
-        constexpr int maxDepth = 5;
-        for (const auto& installDir : EmulatorSettings.GetGameInstallDirs()) {
-            if (auto foundPath = Common::FS::FindGameByID(installDir, *gamePath, maxDepth)) {
-                ebootPath = *foundPath;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            std::cerr << "Error: Game ID or file path not found: " << *gamePath << "\n";
-            return 1;
-        }
-    }
-
-    auto* emulator = Common::Singleton<Core::Emulator>::Instance();
-    emulator->executableName = argv[0];
-    emulator->waitForDebuggerBeforeRun = waitForDebugger;
-    emulator->Run(ebootPath, gameArgs, overrideRoot);
+    LaunchPipeline::RunEmulator(argv[0], waitForDebugger, *ebootPath, gameArgs, overrideRoot);
 
     return 0;
 }
