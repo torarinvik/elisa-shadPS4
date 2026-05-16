@@ -25,12 +25,11 @@ The app runs the `baseline-safe` profile, asks Elisa to choose the next safest t
 that baseline summary, then runs the chosen profile with an 8 second timeout and prints a compact
 comparison. The test target uses fixture logs and does not launch the emulator.
 
-Live runs use two safety layers. The C bridge owns the hard wall-clock timeout and child-process
-termination, while Elisa owns a cooperative `TraceProgressBudget` around launch, native error
-collection, log readback, and parser analysis phases. The budget is intentionally phase-based rather
-than time-based, because the live process wait is still a single blocking native call with its own
-kill switch. This makes the orchestration auditable in `-emit progress` without pretending Elisa can
-preempt C once the raw extern has been entered.
+Live runs use two safety layers. The C bridge owns process primitives and hard termination, while
+Elisa owns the orchestration loop through `start`, `poll`, and `kill` native calls. A cooperative
+`TraceProgressBudget` ticks through launch, each bounded poll, native error collection, log readback,
+and parser analysis. The native poll sleeps for a short interval and enforces the wall-clock deadline,
+so Elisa can supervise the run without busy-spinning or entering one long opaque wait.
 
 For already-captured logs, call `ufc_trace_analyze_existing_log(path)` from Elisa. That path only grants
 `FS.Read`, `Sys.FFI`, and `SysMemory.Foreign`; it does not spawn or kill shadPS4. This is the preferred
@@ -58,6 +57,25 @@ Available profiles are represented in Elisa:
 - `fmask-in-place`
 - `compositor-null-layer`
 - `videoout-unorm`
+
+## Root-first porting map
+
+Porting from `src/main.cpp` is doable if we treat it as a dependency tree and only replace safe
+root-adjacent policy first. The current root does, in order:
+
+1. Parse CLI options and extras.
+2. Handle no-args/help and simple utility commands.
+3. Initialize logging, IPC, emulator state, user settings, and config.
+4. Migrate trophy keys.
+5. Apply launch flags such as patch file, fullscreen, FPS, and config mode.
+6. Resolve game path or game ID through configured install directories.
+7. Hand control to `Core::Emulator::Run`.
+
+The safe Elisa candidates are the first six layers: CLI schema, launch intent construction, config
+mode decisions, utility-command policy, path/ID resolution policy, and preflight diagnostics. The
+unsafe/high-risk leaf remains `Core::Emulator::Run` and the renderer stack below it. A good next
+slice is to define an Elisa `LaunchIntent` mirroring the parsed CLI state, test it with fixture args,
+then pass that intent through a narrow C++ bridge while keeping actual emulator execution in C++.
 
 The native C bridge deliberately does not decide profile policy for new Elisa callers. Elisa
 constructs a `TraceProfile` with explicit booleans such as `null_fmask_reads`,

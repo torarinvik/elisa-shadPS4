@@ -416,18 +416,18 @@ def ufc_trace_profiles_keep_safe_timeout_defaults() -> void can[Abort.Panic]:
 def ufc_trace_progress_budget_tracks_safe_phases() -> void can[Abort.Panic, Progress.CheckCancel, Progress.Tick]:
     can Abort.Panic, Progress.CheckCancel, Progress.Tick:
         baseline_budget: mutable TraceProgressBudget = ufc_trace_progress_budget_for_profile(baseline_safe_profile())
-        if baseline_budget.remaining_steps != 8:
+        if baseline_budget.remaining_steps != 192:
             panic("expected baseline progress steps")
         ufc_trace_progress_tick(baseline_budget.ref[mutable TraceProgressBudget&])
-        if baseline_budget.remaining_steps != 7:
+        if baseline_budget.remaining_steps != 191:
             panic("expected baseline progress tick")
 
-        existing_log_budget: TraceProgressBudget = ufc_trace_progress_budget_for_profile(existing_log_profile())
+        existing_log_budget: TraceProgressBudget = ufc_trace_progress_budget_for_existing_log()
         if existing_log_budget.remaining_steps != 4:
             panic("expected existing-log progress steps")
 
         probe_budget: TraceProgressBudget = ufc_trace_progress_budget_for_profile(fmask_in_place_probe_profile())
-        if probe_budget.remaining_steps != 12:
+        if probe_budget.remaining_steps != 432:
             panic("expected probe progress steps")
 
 

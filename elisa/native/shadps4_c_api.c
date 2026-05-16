@@ -18,6 +18,14 @@ static char shadps4_elisa_log_path_ring[8][1024];
 static int shadps4_elisa_log_path_ring_index;
 static char* shadps4_elisa_file_buffer;
 
+typedef struct Shadps4ElisaTraceProcess {
+    pid_t pid;
+    uint64_t deadline_ms;
+    int active;
+} Shadps4ElisaTraceProcess;
+
+static Shadps4ElisaTraceProcess shadps4_elisa_trace_processes[8];
+
 static void shadps4_elisa_set_error(const char* message) {
     if (message == NULL) {
         shadps4_elisa_error[0] = 0;
@@ -169,23 +177,70 @@ static uint64_t shadps4_elisa_monotonic_ms(void) {
     return ((uint64_t)ts.tv_sec * 1000u) + ((uint64_t)ts.tv_nsec / 1000000u);
 }
 
-static int shadps4_elisa_run_ufc_trace_impl(const char* root_dir, const char* profile,
-                                            uint32_t timeout_ms, int null_fmask_reads,
-                                            int fmask_decompress_in_place,
-                                            int compositor_null_layer, int videoout_unorm,
-                                            char* out_log_path, uint64_t out_log_path_cap,
-                                            int* out_exit_code, int* out_timed_out) {
+static int shadps4_elisa_alloc_trace_slot(void) {
+    for (int index = 0; index < (int)(sizeof(shadps4_elisa_trace_processes) /
+                                     sizeof(shadps4_elisa_trace_processes[0]));
+         ++index) {
+        if (!shadps4_elisa_trace_processes[index].active) {
+            return index + 1;
+        }
+    }
+    return 0;
+}
+
+static Shadps4ElisaTraceProcess* shadps4_elisa_trace_process_for_handle(int handle) {
+    if (handle <= 0 || handle > (int)(sizeof(shadps4_elisa_trace_processes) /
+                                      sizeof(shadps4_elisa_trace_processes[0]))) {
+        return NULL;
+    }
+    Shadps4ElisaTraceProcess* process = &shadps4_elisa_trace_processes[handle - 1];
+    if (!process->active) {
+        return NULL;
+    }
+    return process;
+}
+
+static void shadps4_elisa_finalize_trace_process(Shadps4ElisaTraceProcess* process, int status,
+                                                 int timed_out, int* out_exit_code,
+                                                 int* out_timed_out) {
+    if (out_timed_out != NULL) {
+        *out_timed_out = timed_out;
+    }
+    if (out_exit_code != NULL) {
+        if (timed_out) {
+            *out_exit_code = 124;
+        } else if (WIFEXITED(status)) {
+            *out_exit_code = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            *out_exit_code = 128 + WTERMSIG(status);
+        }
+    }
+    process->active = 0;
+    process->pid = 0;
+    process->deadline_ms = 0;
+}
+
+int shadps4_elisa_start_ufc_trace_flags(const char* root_dir, const char* profile,
+                                        uint32_t timeout_ms, int null_fmask_reads,
+                                        int fmask_decompress_in_place, int compositor_null_layer,
+                                        int videoout_unorm, char* out_log_path,
+                                        uint64_t out_log_path_cap, int* out_handle) {
     const char* root = root_dir != NULL ? root_dir : ".";
     const char* chosen_profile = profile != NULL ? profile : "baseline-safe";
     if (out_log_path == NULL || out_log_path_cap == 0) {
         shadps4_elisa_set_error("missing log path buffer");
         return 0;
     }
-    if (out_exit_code != NULL) {
-        *out_exit_code = -1;
+    if (out_handle == NULL) {
+        shadps4_elisa_set_error("missing trace handle output");
+        return 0;
     }
-    if (out_timed_out != NULL) {
-        *out_timed_out = 0;
+    *out_handle = 0;
+
+    const int handle = shadps4_elisa_alloc_trace_slot();
+    if (handle == 0) {
+        shadps4_elisa_set_error("no free trace process slot");
+        return 0;
     }
 
     char log_dir[1024];
@@ -224,43 +279,107 @@ static int shadps4_elisa_run_ufc_trace_impl(const char* root_dir, const char* pr
     }
 
     const uint32_t effective_timeout = timeout_ms == 0 ? 8000 : timeout_ms;
-    const uint64_t deadline = shadps4_elisa_monotonic_ms() + effective_timeout;
+    Shadps4ElisaTraceProcess* process = &shadps4_elisa_trace_processes[handle - 1];
+    process->pid = pid;
+    process->deadline_ms = shadps4_elisa_monotonic_ms() + effective_timeout;
+    process->active = 1;
+    *out_handle = handle;
+    shadps4_elisa_set_error(NULL);
+    return 1;
+}
+
+int shadps4_elisa_poll_trace(int handle, int* out_running, int* out_exit_code,
+                             int* out_timed_out) {
+    Shadps4ElisaTraceProcess* process = shadps4_elisa_trace_process_for_handle(handle);
+    if (process == NULL) {
+        shadps4_elisa_set_error("invalid trace process handle");
+        return 0;
+    }
+    if (out_running != NULL) {
+        *out_running = 1;
+    }
+    if (out_exit_code != NULL) {
+        *out_exit_code = -1;
+    }
+    if (out_timed_out != NULL) {
+        *out_timed_out = 0;
+    }
+
     int status = 0;
-    for (;;) {
-        pid_t done = waitpid(pid, &status, WNOHANG);
-        if (done == pid) {
-            if (out_exit_code != NULL) {
-                if (WIFEXITED(status)) {
-                    *out_exit_code = WEXITSTATUS(status);
-                } else if (WIFSIGNALED(status)) {
-                    *out_exit_code = 128 + WTERMSIG(status);
-                }
-            }
-            shadps4_elisa_set_error(NULL);
-            return 1;
+    pid_t done = waitpid(process->pid, &status, WNOHANG);
+    if (done == process->pid) {
+        if (out_running != NULL) {
+            *out_running = 0;
         }
-        if (done < 0) {
-            shadps4_elisa_set_error("waitpid failed");
+        shadps4_elisa_finalize_trace_process(process, status, 0, out_exit_code, out_timed_out);
+        shadps4_elisa_set_error(NULL);
+        return 1;
+    }
+    if (done < 0) {
+        shadps4_elisa_set_error("waitpid failed");
+        process->active = 0;
+        return 0;
+    }
+    if (shadps4_elisa_monotonic_ms() >= process->deadline_ms) {
+        kill(process->pid, SIGTERM);
+        usleep(200000);
+        if (waitpid(process->pid, &status, WNOHANG) == 0) {
+            kill(process->pid, SIGKILL);
+        }
+        waitpid(process->pid, &status, 0);
+        if (out_running != NULL) {
+            *out_running = 0;
+        }
+        shadps4_elisa_finalize_trace_process(process, status, 1, out_exit_code, out_timed_out);
+        shadps4_elisa_set_error(NULL);
+        return 1;
+    }
+
+    usleep(50000);
+    shadps4_elisa_set_error(NULL);
+    return 1;
+}
+
+int shadps4_elisa_kill_trace(int handle) {
+    Shadps4ElisaTraceProcess* process = shadps4_elisa_trace_process_for_handle(handle);
+    if (process == NULL) {
+        shadps4_elisa_set_error("invalid trace process handle");
+        return 0;
+    }
+
+    int status = 0;
+    kill(process->pid, SIGTERM);
+    usleep(200000);
+    if (waitpid(process->pid, &status, WNOHANG) == 0) {
+        kill(process->pid, SIGKILL);
+    }
+    waitpid(process->pid, &status, 0);
+    shadps4_elisa_finalize_trace_process(process, status, 1, NULL, NULL);
+    shadps4_elisa_set_error(NULL);
+    return 1;
+}
+
+static int shadps4_elisa_run_ufc_trace_impl(const char* root_dir, const char* profile,
+                                            uint32_t timeout_ms, int null_fmask_reads,
+                                            int fmask_decompress_in_place,
+                                            int compositor_null_layer, int videoout_unorm,
+                                            char* out_log_path, uint64_t out_log_path_cap,
+                                            int* out_exit_code, int* out_timed_out) {
+    int handle = 0;
+    if (!shadps4_elisa_start_ufc_trace_flags(root_dir, profile, timeout_ms, null_fmask_reads,
+                                            fmask_decompress_in_place, compositor_null_layer,
+                                            videoout_unorm, out_log_path, out_log_path_cap,
+                                            &handle)) {
+        return 0;
+    }
+
+    int running = 1;
+    while (running) {
+        if (!shadps4_elisa_poll_trace(handle, &running, out_exit_code, out_timed_out)) {
             return 0;
         }
-        if (shadps4_elisa_monotonic_ms() >= deadline) {
-            kill(pid, SIGTERM);
-            usleep(200000);
-            if (waitpid(pid, &status, WNOHANG) == 0) {
-                kill(pid, SIGKILL);
-            }
-            waitpid(pid, &status, 0);
-            if (out_timed_out != NULL) {
-                *out_timed_out = 1;
-            }
-            if (out_exit_code != NULL) {
-                *out_exit_code = 124;
-            }
-            shadps4_elisa_set_error(NULL);
-            return 1;
-        }
-        usleep(50000);
     }
+    return 1;
 }
 
 int shadps4_elisa_run_ufc_trace(const char* root_dir, const char* profile, uint32_t timeout_ms,

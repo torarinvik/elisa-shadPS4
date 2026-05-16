@@ -3,6 +3,7 @@ permission Sys:
 
 permission SysProcess:
     Spawn
+    Poll
     Kill
 
 permission SysEnv:
@@ -22,6 +23,9 @@ permission Clock:
 extern shadps4_elisa_find_ufc1(out_path: mutable u8&, out_path_cap: u64) -> int can[Sys.FFI, FS.Read]
 extern shadps4_elisa_run_ufc_trace(root_dir: cstr, profile: cstr, timeout_ms: u32, out_log_path: mutable u8&, out_log_path_cap: u64, out_exit_code: mutable int&, out_timed_out: mutable int&) -> int can[Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read]
 extern shadps4_elisa_run_ufc_trace_flags(root_dir: cstr, profile: cstr, timeout_ms: u32, null_fmask_reads: int, fmask_decompress_in_place: int, compositor_null_layer: int, videoout_unorm: int, out_log_path: mutable u8&, out_log_path_cap: u64, out_exit_code: mutable int&, out_timed_out: mutable int&) -> int can[Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read]
+extern shadps4_elisa_start_ufc_trace_flags(root_dir: cstr, profile: cstr, timeout_ms: u32, null_fmask_reads: int, fmask_decompress_in_place: int, compositor_null_layer: int, videoout_unorm: int, out_log_path: mutable u8&, out_log_path_cap: u64, out_handle: mutable int&) -> int can[Sys.FFI, SysProcess.Spawn, SysEnv.Write, FS.Write, Clock.Read]
+extern shadps4_elisa_poll_trace(handle: int, out_running: mutable int&, out_exit_code: mutable int&, out_timed_out: mutable int&) -> int can[Sys.FFI, SysProcess.Poll, SysProcess.Kill, Clock.Read]
+extern shadps4_elisa_kill_trace(handle: int) -> int can[Sys.FFI, SysProcess.Kill]
 extern shadps4_elisa_read_file(path: cstr) -> cstr can[Sys.FFI, FS.Read, SysMemory.Foreign]
 extern shadps4_elisa_last_log_path() -> cstr can[Sys.FFI]
 extern shadps4_elisa_last_error() -> cstr can[Sys.FFI]
@@ -315,13 +319,15 @@ def fmask_in_place_videoout_unorm_probe_profile() -> TraceProfile:
     return TraceProfile("fmask-in-place-videoout-unorm-20s", 20000, false, true, false, true)
 
 def ufc_trace_progress_budget_for_profile(profile: TraceProfile) -> TraceProgressBudget:
-    # The native C bridge owns the wall-clock timeout. This budget tracks the
-    # cooperative Elisa phases around launch, log readback, and parsing.
-    if profile.timeout_ms > 8000:
-        return TraceProgressBudget(12, false)
-    if profile.timeout_ms == 0:
-        return TraceProgressBudget(4, false)
-    return TraceProgressBudget(8, false)
+    timeout: mutable i64 = profile.timeout_ms.i64()
+    if timeout <= 0:
+        timeout <- 8000
+    # One poll sleeps for roughly 50ms in the C bridge. Keep a generous cushion
+    # for launch/readback/parser phases so budget exhaustion means a real bug.
+    return TraceProgressBudget((timeout / 50) + 32, false)
+
+def ufc_trace_progress_budget_for_existing_log() -> TraceProgressBudget:
+    return TraceProgressBudget(4, false)
 
 def ufc_trace_progress_cancel(budget: mutable TraceProgressBudget&) -> void:
     budget.cancelled <- true
@@ -885,19 +891,29 @@ def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDi
         true
     )
 
-def ufc_trace_run_profile_budgeted(root_dir: cstr, profile: TraceProfile, budget: mutable TraceProgressBudget&) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+def ufc_trace_run_profile_budgeted(root_dir: cstr, profile: TraceProfile, budget: mutable TraceProgressBudget&) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Poll, SysProcess.Spawn]:
     game: GameId = ufc1_game_id()
     log_path_buffer: mutable u8[1024] = zeroed
     exit_code: mutable int = -1
     timed_out_value: mutable int = 0
     ok_value: mutable int = 0
+    handle: mutable int = 0
+    running_value: mutable int = 0
     can Abort.Panic, Progress.CheckCancel, Progress.Tick:
         ufc_trace_progress_tick(budget)
-    can Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read:
+    can Sys.FFI, SysProcess.Spawn, SysEnv.Write, FS.Write, Clock.Read:
         trusted Unsafe.RawExtern:
-            ok_value <- shadps4_elisa_run_ufc_trace_flags(root_dir, profile.name, profile.timeout_ms, 1 if profile.null_fmask_reads else 0, 1 if profile.fmask_decompress_in_place else 0, 1 if profile.compositor_null_layer else 0, 1 if profile.videoout_unorm else 0, log_path_buffer[0].ref[mutable u8&], 1024, exit_code.ref[mutable int&], timed_out_value.ref[mutable int&])
-    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
-        ufc_trace_progress_tick(budget)
+            ok_value <- shadps4_elisa_start_ufc_trace_flags(root_dir, profile.name, profile.timeout_ms, 1 if profile.null_fmask_reads else 0, 1 if profile.fmask_decompress_in_place else 0, 1 if profile.compositor_null_layer else 0, 1 if profile.videoout_unorm else 0, log_path_buffer[0].ref[mutable u8&], 1024, handle.ref[mutable int&])
+    if ok_value != 0:
+        running_value <- 1
+        while running_value != 0:
+            can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+                ufc_trace_progress_tick(budget)
+            can Sys.FFI, SysProcess.Poll, SysProcess.Kill, Clock.Read:
+                trusted Unsafe.RawExtern:
+                    ok_value <- shadps4_elisa_poll_trace(handle, running_value.ref[mutable int&], exit_code.ref[mutable int&], timed_out_value.ref[mutable int&])
+            if ok_value == 0:
+                running_value <- 0
     native_error: mutable cstr = ""
     can Sys.FFI:
         trusted Unsafe.RawExtern:
@@ -922,14 +938,14 @@ def ufc_trace_run_profile_budgeted(root_dir: cstr, profile: TraceProfile, budget
     run: TraceRun = TraceRun(game, profile, last_log_path, exit_code, timed_out_value != 0)
     return TraceResult(ok_value != 0, run, summary, native_error)
 
-def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Poll, SysProcess.Spawn]:
     budget: mutable TraceProgressBudget = ufc_trace_progress_budget_for_profile(profile)
-    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
+    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Poll, SysProcess.Spawn:
         return ufc_trace_run_profile_budgeted(root_dir, profile, budget.ref[mutable TraceProgressBudget&])
 
-def ufc_trace_run_baseline_safe(root_dir: cstr) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+def ufc_trace_run_baseline_safe(root_dir: cstr) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Poll, SysProcess.Spawn]:
     result: mutable TraceResult = zeroed
-    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
+    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Poll, SysProcess.Spawn:
         result <- ufc_trace_run_profile(root_dir, baseline_safe_profile())
     return result
 
@@ -955,7 +971,7 @@ def ufc_trace_analyze_existing_log_budgeted(path: cstr, budget: mutable TracePro
     return TraceResult(true, run, summary, native_error)
 
 def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[Abort.Panic, FS.Read, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysMemory.Foreign]:
-    budget: mutable TraceProgressBudget = ufc_trace_progress_budget_for_profile(existing_log_profile())
+    budget: mutable TraceProgressBudget = ufc_trace_progress_budget_for_existing_log()
     can Abort.Panic, FS.Read, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysMemory.Foreign:
         return ufc_trace_analyze_existing_log_budgeted(path, budget.ref[mutable TraceProgressBudget&])
 

@@ -5,7 +5,7 @@ def main() -> int:
     baseline: mutable TraceResult = zeroed
     experiment: mutable TraceResult = zeroed
     combined: mutable TraceResult = zeroed
-    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
+    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Poll, SysProcess.Spawn:
         baseline <- ufc_trace_run_baseline_safe("../shadPS4")
         experiment <- ufc_trace_run_profile("../shadPS4", ufc_trace_recommended_profile(baseline.render))
         combined <- ufc_trace_run_profile("../shadPS4", fmask_in_place_videoout_unorm_profile())
