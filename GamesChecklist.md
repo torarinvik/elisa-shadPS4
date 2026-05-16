@@ -4,25 +4,29 @@
 
 | Acquired | Game | Title ID | Details |
 |---|---|---|---|
-| [x] | EA Sports UFC | CUSA00264 | Extracted and present |
-| [x] | UFC 2 | CUSA01968 | Extracted and present |
-| [x] | Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | Extracted and present |
-| [x] | UFC 3 | CUSA06534 | Extracted and present |
-| [x] | UFC 3 Patch v1.14 | CUSA06534-patch | Patch folder |
-| [x] | SEGA Mega Drive Classics | CUSA09771 | Extracted and present |
-| [x] | The Witch and the Hundred Knight 2 | CUSA10135 | Extracted and present |
-| [x] | EA Sports UFC 4 | CUSA14204 | Extracted and present |
-| [x] | Zero Strain | CUSA18570 | Extracted and present |
-| [x] | New Super Lucky's Tale | CUSA20302 | Extracted and present |
-| [x] | Race With Ryan Road Trip Deluxe Edition | CUSA23279 | Extracted and present |
-| [x] | Katamari Damacy Reroll | CUSA24361 | Extracted and present |
-| [x] | Stray | CUSA24899 | Extracted and present |
-| [x] | Teenage Mutant Ninja Turtles: Shredder's Revenge | CUSA30991 | Extracted and present |
-| [x] | Gigantosaurus: Dino Sports | CUSA43402 | Extracted and present |
-| [ ] | Another Sight | CUSA15308 | Removed from folder; needs JIT on macOS |
-| [ ] | Minecraft Dungeons | CUSA18797 | Removed from folder; needs JIT on macOS |
-| [ ] | Taxi Chaos | CUSA20527 | Removed from folder; needs JIT on macOS |
-| [ ] | Severed Steel | CUSA30139 | Removed from folder; needs JIT on macOS |
+| [x] | EA Sports UFC | CUSA00264 | Tested. Runs, then hits the known render black-screen bug. Strict watchdog shows the black frame starts upstream of final presentation; next step is VideoOut compute input tracing for shader `0xc455a5aa2c447041`. |
+| [x] | UFC 2 | CUSA01968 | not tested |
+| [x] | Hasbro Family Fun Pack | CUSA03312 | Tested. Initially quit when entering fullscreen; after macOS permission/restart it ran further. Needs current retest for exact playable state. |
+| [x] | Joe's Diner | CUSA03774 | Tested. Starts and accepts movement input from arrow keys/left stick, but expected keyboard button bindings such as X/C/Z did not work. Needs input mapping follow-up. |
+| [x] | Yooka-Laylee | CUSA05721 | Tested. Boots into scene/menu path, but has severe flicker/distortion/missing geometry and did not advance from the "press X" prompt with keyboard X. |
+| [x] | Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | not tested |
+| [x] | UFC 3 | CUSA06534 | not tested |
+| [x] | UFC 3 Patch v1.14 | CUSA06534-patch | Patch folder; not tested independently. |
+| [x] | Beast Quest | CUSA09052 | Tested. Starts, plays audio/narrator, then reaches a black screen similar to the UFC black-screen bucket. Also showed startup flicker/distortion. |
+| [x] | SEGA Mega Drive Classics | CUSA09771 | not tested |
+| [x] | The Witch and the Hundred Knight 2 | CUSA10135 | not tested |
+| [x] | EA Sports UFC 4 | CUSA14204 | not tested |
+| [x] | Zero Strain | CUSA18570 | not tested |
+| [x] | New Super Lucky's Tale | CUSA20302 | not tested |
+| [x] | Race With Ryan Road Trip Deluxe Edition | CUSA23279 | not tested |
+| [x] | Katamari Damacy Reroll | CUSA24361 | not tested |
+| [x] | Stray | CUSA24899 | not tested |
+| [x] | Teenage Mutant Ninja Turtles: Shredder's Revenge | CUSA30991 | Tested. Works well enough to reach startup, main menu, and gameplay after fixing the flexible-memory/`sceKernelMunmap(0, ...)` quit path. Startup music works; user observed no in-game audio yet. |
+| [x] | Gigantosaurus: Dino Sports | CUSA43402 | not tested |
+| [ ] | Another Sight | CUSA15308 | Tested, then removed from folder. Blocked by fixed mapping around `0x4000000000`, which overlaps the macOS x86_64-on-Apple-Silicon reserved address hole. |
+| [ ] | Minecraft Dungeons | CUSA18797 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
+| [ ] | Taxi Chaos | CUSA20527 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
+| [ ] | Severed Steel | CUSA30139 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
 
 ## Approximate Size Reference
 
