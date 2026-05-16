@@ -1162,6 +1162,8 @@ add_executable(shadps4
     ${SHADER_RECOMPILER}
     ${VIDEO_CORE}
     ${EMULATOR}
+    src/launch_cli.cpp
+    src/launch_cli.h
     src/launch_pipeline.cpp
     src/launch_pipeline.h
     src/launch_intent_shadow.cpp
