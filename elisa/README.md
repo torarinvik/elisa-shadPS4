@@ -147,6 +147,24 @@ Shadow mode parses the same `argv` through Elisa, compares the normalized launch
 C++ path, and logs mismatches to stderr without changing runtime behavior. Keep this as the default
 porting pattern until fixture coverage is strong enough to flip a specific decision from C++ to Elisa.
 
+For active dogfooding, the executable also has an opt-in replacement path:
+
+```sh
+SHADPS4_ELISA_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true
+```
+
+This asks Elisa to produce the real `CliState` for the supported small-argv slice. The C++ CLI11 parser
+remains the default and is still used for no-argument help/message-box behavior, argv lists beyond the
+tiny v1 C ABI limit, and invocations with more than one guest argument. That fallback is intentional:
+the current ABI carries only the first guest argument, so we do not pretend it can safely replace full
+argv-vector behavior yet.
+
+A quick error-path smoke that should exit before runtime setup:
+
+```sh
+SHADPS4_ELISA_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen maybe
+```
+
 On macOS, `cmake/Elisa.cmake` infers `arm64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` or
 `x86_64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` from `CMAKE_OSX_ARCHITECTURES`, so opt-in Elisa
 archives match the C++ build architecture instead of accidentally reusing the compiler host arch.
