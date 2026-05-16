@@ -25,6 +25,13 @@ The app runs the `baseline-safe` profile, asks Elisa to choose the next safest t
 that baseline summary, then runs the chosen profile with an 8 second timeout and prints a compact
 comparison. The test target uses fixture logs and does not launch the emulator.
 
+Live runs use two safety layers. The C bridge owns the hard wall-clock timeout and child-process
+termination, while Elisa owns a cooperative `TraceProgressBudget` around launch, native error
+collection, log readback, and parser analysis phases. The budget is intentionally phase-based rather
+than time-based, because the live process wait is still a single blocking native call with its own
+kill switch. This makes the orchestration auditable in `-emit progress` without pretending Elisa can
+preempt C once the raw extern has been entered.
+
 For already-captured logs, call `ufc_trace_analyze_existing_log(path)` from Elisa. That path only grants
 `FS.Read`, `Sys.FFI`, and `SysMemory.Foreign`; it does not spawn or kill shadPS4. This is the preferred
 way to iterate on parser and FMASK/compositor heuristics before any live emulator run.

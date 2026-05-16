@@ -45,6 +45,10 @@ struct TraceRun:
     exit_code: int
     timed_out: bool
 
+struct TraceProgressBudget:
+    remaining_steps: mutable i64
+    cancelled: mutable bool
+
 struct TraceResult:
     ok: bool
     run: TraceRun
@@ -310,6 +314,26 @@ def fmask_in_place_probe_profile() -> TraceProfile:
 def fmask_in_place_videoout_unorm_probe_profile() -> TraceProfile:
     return TraceProfile("fmask-in-place-videoout-unorm-20s", 20000, false, true, false, true)
 
+def ufc_trace_progress_budget_for_profile(profile: TraceProfile) -> TraceProgressBudget:
+    # The native C bridge owns the wall-clock timeout. This budget tracks the
+    # cooperative Elisa phases around launch, log readback, and parsing.
+    if profile.timeout_ms > 8000:
+        return TraceProgressBudget(12, false)
+    if profile.timeout_ms == 0:
+        return TraceProgressBudget(4, false)
+    return TraceProgressBudget(8, false)
+
+def ufc_trace_progress_cancel(budget: mutable TraceProgressBudget&) -> void:
+    budget.cancelled <- true
+
+def ufc_trace_progress_tick(budget: mutable TraceProgressBudget&) -> void can[Abort.Panic, Progress.CheckCancel, Progress.Tick]:
+    can Abort.Panic:
+        if budget.cancelled:
+            panic("trace progress budget cancelled")
+        if budget.remaining_steps <= 0:
+            panic("trace progress budget exhausted")
+    budget.remaining_steps <- budget.remaining_steps - 1
+
 def empty_checkpoint() -> RenderCheckpoint:
     return RenderCheckpoint(
         0, -1, -1, -1,
@@ -333,8 +357,9 @@ def trace_byte_at(text: cstr, index: i64) -> u8:
 
 def trace_cstr_len(text: cstr) -> i64:
     index: mutable i64 = 0
-    while trace_byte_at(text, index) != 0:
-        index <- index + 1
+    trusted Unsafe.AssumeProgress:
+        while trace_byte_at(text, index) != 0:
+            index <- index + 1
     return index
 
 def trace_line_contains(text: cstr, start: i64, end: i64, needle: cstr) -> bool:
@@ -344,17 +369,19 @@ def trace_line_contains(text: cstr, start: i64, end: i64, needle: cstr) -> bool:
     if end - start < needle_len:
         return false
     pos: mutable i64 = start
-    while pos + needle_len <= end:
-        offset: mutable i64 = 0
-        matched: mutable bool = true
-        while offset < needle_len and matched:
-            if trace_byte_at(text, pos + offset) != trace_byte_at(needle, offset):
-                matched <- false
-            else:
-                offset <- offset + 1
-        if matched:
-            return true
-        pos <- pos + 1
+    trusted Unsafe.AssumeProgress:
+        while pos + needle_len <= end:
+            offset: mutable i64 = 0
+            matched: mutable bool = true
+            trusted Unsafe.AssumeProgress:
+                while offset < needle_len and matched:
+                    if trace_byte_at(text, pos + offset) != trace_byte_at(needle, offset):
+                        matched <- false
+                    else:
+                        offset <- offset + 1
+            if matched:
+                return true
+            pos <- pos + 1
     return false
 
 def trace_find_marker(text: cstr, start: i64, end: i64, marker: cstr) -> i64:
@@ -362,17 +389,19 @@ def trace_find_marker(text: cstr, start: i64, end: i64, marker: cstr) -> i64:
     if marker_len <= 0 or end - start < marker_len:
         return -1
     pos: mutable i64 = start
-    while pos + marker_len <= end:
-        offset: mutable i64 = 0
-        matched: mutable bool = true
-        while offset < marker_len and matched:
-            if trace_byte_at(text, pos + offset) != trace_byte_at(marker, offset):
-                matched <- false
-            else:
-                offset <- offset + 1
-        if matched:
-            return pos
-        pos <- pos + 1
+    trusted Unsafe.AssumeProgress:
+        while pos + marker_len <= end:
+            offset: mutable i64 = 0
+            matched: mutable bool = true
+            trusted Unsafe.AssumeProgress:
+                while offset < marker_len and matched:
+                    if trace_byte_at(text, pos + offset) != trace_byte_at(marker, offset):
+                        matched <- false
+                    else:
+                        offset <- offset + 1
+            if matched:
+                return pos
+            pos <- pos + 1
     return -1
 
 def trace_is_digit(ch: u8) -> bool:
@@ -394,10 +423,11 @@ def trace_decimal_after(text: cstr, start: i64, end: i64, marker: cstr, fallback
     pos: mutable i64 = marker_pos + trace_cstr_len(marker)
     value: mutable i64 = 0
     seen: mutable bool = false
-    while pos < end and trace_is_digit(trace_byte_at(text, pos)):
-        value <- value * 10 + (trace_byte_at(text, pos) - '0').i64()
-        seen <- true
-        pos <- pos + 1
+    trusted Unsafe.AssumeProgress:
+        while pos < end and trace_is_digit(trace_byte_at(text, pos)):
+            value <- value * 10 + (trace_byte_at(text, pos) - '0').i64()
+            seen <- true
+            pos <- pos + 1
     return value if seen else fallback
 
 def trace_scaled_decimal_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i64) -> i64:
@@ -407,22 +437,25 @@ def trace_scaled_decimal_after(text: cstr, start: i64, end: i64, marker: cstr, f
     pos: mutable i64 = marker_pos + trace_cstr_len(marker)
     whole: mutable i64 = 0
     seen: mutable bool = false
-    while pos < end and trace_is_digit(trace_byte_at(text, pos)):
-        whole <- whole * 10 + (trace_byte_at(text, pos) - '0').i64()
-        seen <- true
-        pos <- pos + 1
+    trusted Unsafe.AssumeProgress:
+        while pos < end and trace_is_digit(trace_byte_at(text, pos)):
+            whole <- whole * 10 + (trace_byte_at(text, pos) - '0').i64()
+            seen <- true
+            pos <- pos + 1
     fraction: mutable i64 = 0
     fraction_digits: mutable i64 = 0
     if pos < end and trace_byte_at(text, pos) == '.':
         pos <- pos + 1
-        while pos < end and trace_is_digit(trace_byte_at(text, pos)) and fraction_digits < 2:
-            fraction <- fraction * 10 + (trace_byte_at(text, pos) - '0').i64()
+        trusted Unsafe.AssumeProgress:
+            while pos < end and trace_is_digit(trace_byte_at(text, pos)) and fraction_digits < 2:
+                fraction <- fraction * 10 + (trace_byte_at(text, pos) - '0').i64()
+                fraction_digits <- fraction_digits + 1
+                seen <- true
+                pos <- pos + 1
+    trusted Unsafe.AssumeProgress:
+        while fraction_digits < 2:
+            fraction <- fraction * 10
             fraction_digits <- fraction_digits + 1
-            seen <- true
-            pos <- pos + 1
-    while fraction_digits < 2:
-        fraction <- fraction * 10
-        fraction_digits <- fraction_digits + 1
     return whole * 100 + fraction if seen else fallback
 
 def trace_hex_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i64) -> i64:
@@ -435,14 +468,15 @@ def trace_hex_after(text: cstr, start: i64, end: i64, marker: cstr, fallback: i6
     value: mutable i64 = 0
     seen: mutable bool = false
     scanning: mutable bool = true
-    while pos < end and scanning:
-        digit: i64 = trace_hex_value(trace_byte_at(text, pos))
-        if digit < 0:
-            scanning <- false
-        else:
-            value <- value * 16 + digit
-            seen <- true
-            pos <- pos + 1
+    trusted Unsafe.AssumeProgress:
+        while pos < end and scanning:
+            digit: i64 = trace_hex_value(trace_byte_at(text, pos))
+            if digit < 0:
+                scanning <- false
+            else:
+                value <- value * 16 + digit
+                seen <- true
+                pos <- pos + 1
     return value if seen else fallback
 
 def trace_metadata_kind(text: cstr, start: i64, end: i64) -> i64:
@@ -720,12 +754,13 @@ def ufc_trace_analyze_text(log_text: cstr) -> RenderCheckpoint:
     text_len: i64 = trace_cstr_len(log_text)
     start: mutable i64 = 0
     index: mutable i64 = 0
-    while index <= text_len:
-        if index == text_len or trace_byte_at(log_text, index) == '\n':
-            summary.line_count <- summary.line_count + 1
-            ufc_trace_analyze_line(summary, log_text, start, index)
-            start <- index + 1
-        index <- index + 1
+    trusted Unsafe.AssumeProgress:
+        while index <= text_len:
+            if index == text_len or trace_byte_at(log_text, index) == '\n':
+                summary.line_count <- summary.line_count + 1
+                ufc_trace_analyze_line(summary, log_text, start, index)
+                start <- index + 1
+            index <- index + 1
     return summary
 
 def ufc_trace_recommended_profile(summary: RenderCheckpoint) -> TraceProfile:
@@ -850,49 +885,79 @@ def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDi
         true
     )
 
-def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+def ufc_trace_run_profile_budgeted(root_dir: cstr, profile: TraceProfile, budget: mutable TraceProgressBudget&) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
     game: GameId = ufc1_game_id()
     log_path_buffer: mutable u8[1024] = zeroed
     exit_code: mutable int = -1
     timed_out_value: mutable int = 0
     ok_value: mutable int = 0
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     can Sys.FFI, SysProcess.Spawn, SysProcess.Kill, SysEnv.Write, FS.Write, Clock.Read:
         trusted Unsafe.RawExtern:
             ok_value <- shadps4_elisa_run_ufc_trace_flags(root_dir, profile.name, profile.timeout_ms, 1 if profile.null_fmask_reads else 0, 1 if profile.fmask_decompress_in_place else 0, 1 if profile.compositor_null_layer else 0, 1 if profile.videoout_unorm else 0, log_path_buffer[0].ref[mutable u8&], 1024, exit_code.ref[mutable int&], timed_out_value.ref[mutable int&])
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     native_error: mutable cstr = ""
     can Sys.FFI:
         trusted Unsafe.RawExtern:
             native_error <- shadps4_elisa_last_error()
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     log_text: mutable cstr = ""
     can Sys.FFI, FS.Read, SysMemory.Foreign:
         trusted Unsafe.RawExtern:
             log_text <- shadps4_elisa_read_file(log_path_buffer[0].ref[u8&])
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     summary: RenderCheckpoint = ufc_trace_analyze_text(log_text)
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     last_log_path: mutable cstr = ""
     can Sys.FFI:
         trusted Unsafe.RawExtern:
             last_log_path <- shadps4_elisa_last_log_path()
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     run: TraceRun = TraceRun(game, profile, last_log_path, exit_code, timed_out_value != 0)
     return TraceResult(ok_value != 0, run, summary, native_error)
 
-def ufc_trace_run_baseline_safe(root_dir: cstr) -> TraceResult can[Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+def ufc_trace_run_profile(root_dir: cstr, profile: TraceProfile) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
+    budget: mutable TraceProgressBudget = ufc_trace_progress_budget_for_profile(profile)
+    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
+        return ufc_trace_run_profile_budgeted(root_dir, profile, budget.ref[mutable TraceProgressBudget&])
+
+def ufc_trace_run_baseline_safe(root_dir: cstr) -> TraceResult can[Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn]:
     result: mutable TraceResult = zeroed
-    can Clock.Read, FS.Read, FS.Write, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
+    can Abort.Panic, Clock.Read, FS.Read, FS.Write, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysEnv.Write, SysMemory.Foreign, SysProcess.Kill, SysProcess.Spawn:
         result <- ufc_trace_run_profile(root_dir, baseline_safe_profile())
     return result
 
-def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[FS.Read, Sys.FFI, SysMemory.Foreign]:
+def ufc_trace_analyze_existing_log_budgeted(path: cstr, budget: mutable TraceProgressBudget&) -> TraceResult can[Abort.Panic, FS.Read, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysMemory.Foreign]:
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     log_text: mutable cstr = ""
     can Sys.FFI, FS.Read, SysMemory.Foreign:
         trusted Unsafe.RawExtern:
             log_text <- shadps4_elisa_read_file(path)
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     native_error: mutable cstr = ""
     can Sys.FFI:
         trusted Unsafe.RawExtern:
             native_error <- shadps4_elisa_last_error()
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     summary: RenderCheckpoint = ufc_trace_analyze_text(log_text)
+    can Abort.Panic, Progress.CheckCancel, Progress.Tick:
+        ufc_trace_progress_tick(budget)
     run: TraceRun = TraceRun(ufc1_game_id(), existing_log_profile(), path, 0, false)
     return TraceResult(true, run, summary, native_error)
+
+def ufc_trace_analyze_existing_log(path: cstr) -> TraceResult can[Abort.Panic, FS.Read, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysMemory.Foreign]:
+    budget: mutable TraceProgressBudget = ufc_trace_progress_budget_for_profile(existing_log_profile())
+    can Abort.Panic, FS.Read, Progress.CheckCancel, Progress.Tick, Sys.FFI, SysMemory.Foreign:
+        return ufc_trace_analyze_existing_log_budgeted(path, budget.ref[mutable TraceProgressBudget&])
 
 def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
     risk: FmaskRisk = ufc_trace_fmask_risk(result.render)
