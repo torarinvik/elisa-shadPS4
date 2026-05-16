@@ -10,10 +10,10 @@
 | [x] | Joe's Diner | CUSA03774 | Tested. Starts and accepts movement input from arrow keys/left stick, but expected keyboard button bindings such as X/C/Z did not work. Needs input mapping follow-up. |
 | [x] | Yooka-Laylee | CUSA05721 | Tested. Boots into scene/menu path, but has severe flicker/distortion/missing geometry and did not advance from the "press X" prompt with keyboard X. |
 | [x] | Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | not tested |
-| [x] | UFC 3 | CUSA06534 | not tested |
+| [x] | UFC 3 | CUSA06534 | Tested. Reaches the loading percentage screen, then strict render validation aborts on an out-of-bounds image view request: `R16G16B16A16Uint` image has 1 layer but the view requests `base_layer=2`. |
 | [x] | UFC 3 Patch v1.14 | CUSA06534-patch | Patch folder; not tested independently. |
 | [x] | Beast Quest | CUSA09052 | Tested. Starts, plays audio/narrator, then reaches a black screen similar to the UFC black-screen bucket. Also showed startup flicker/distortion. |
-| [x] | SEGA Mega Drive Classics | CUSA09771 | not tested |
+| [x] | SEGA Mega Drive Classics | CUSA09771 | Tested. Reaches the "press button to continue" screen, then enters a black-screen state while audio/game logic continues. No strict render-validation assert was captured in this run; log is dominated by repeated metadata texture-read warnings and net stub spam. |
 | [x] | The Witch and the Hundred Knight 2 | CUSA10135 | not tested |
 | [x] | EA Sports UFC 4 | CUSA14204 | not tested |
 | [x] | Zero Strain | CUSA18570 | not tested |
