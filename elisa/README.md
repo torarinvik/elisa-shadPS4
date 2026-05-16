@@ -136,6 +136,17 @@ cmake --build build-elisa --target shadps4_elisa_launch_intent_smoke
 ./build-elisa/shadps4_elisa_launch_intent_smoke
 ```
 
+When `SHADPS4_ENABLE_ELISA_PORTS=ON`, the main shadPS4 executable links the launch-intent archive
+but still uses the original C++ launch policy by default. To dogfood safely, enable shadow mode:
+
+```sh
+SHADPS4_ELISA_SHADOW_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true
+```
+
+Shadow mode parses the same `argv` through Elisa, compares the normalized launch intent against the
+C++ path, and logs mismatches to stderr without changing runtime behavior. Keep this as the default
+porting pattern until fixture coverage is strong enough to flip a specific decision from C++ to Elisa.
+
 On macOS, `cmake/Elisa.cmake` infers `arm64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` or
 `x86_64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` from `CMAKE_OSX_ARCHITECTURES`, so opt-in Elisa
 archives match the C++ build architecture instead of accidentally reusing the compiler host arch.

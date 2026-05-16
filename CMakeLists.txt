@@ -1182,6 +1182,7 @@ if (SHADPS4_ENABLE_ELISA_PORTS)
         ABI_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/elisa/native/shadps4_elisa_launch_intent.h"
         OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/elisa")
     target_link_libraries(shadps4 PRIVATE shadps4_elisa_launch_intent)
+    target_compile_definitions(shadps4 PRIVATE SHADPS4_ENABLE_ELISA_PORTS=1)
 
     add_executable(shadps4_elisa_launch_intent_smoke
         elisa/native/launch_intent_smoke.cpp)

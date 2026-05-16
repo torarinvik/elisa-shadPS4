@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <filesystem>
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <vector>
 #include <CLI/CLI.hpp>
 #include <SDL3/SDL_messagebox.h>
@@ -26,6 +31,134 @@
 #include <windows.h>
 #endif
 #include <core/user_settings.h>
+
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+#include "shadps4_elisa_launch_intent.h"
+#endif
+
+namespace {
+
+constexpr int64_t ElisaIntentRun = 0;
+constexpr int64_t ElisaIntentNoArgs = 1;
+constexpr int64_t ElisaIntentBigPicture = 2;
+constexpr int64_t ElisaIntentAddGameFolder = 3;
+constexpr int64_t ElisaIntentSetAddonFolder = 4;
+constexpr int64_t ElisaIntentError = 5;
+
+constexpr int64_t ElisaFullscreenUnset = 0;
+constexpr int64_t ElisaFullscreenTrue = 1;
+constexpr int64_t ElisaFullscreenFalse = 2;
+
+constexpr int64_t ElisaConfigDefault = 0;
+constexpr int64_t ElisaConfigClean = 1;
+constexpr int64_t ElisaConfigGlobal = 2;
+
+struct LaunchIntentShadow {
+    int64_t kind = ElisaIntentError;
+    intptr_t exit_code = 1;
+    std::string game_path;
+    std::string patch_file;
+    std::string override_root;
+    std::string add_game_folder;
+    std::string set_addon_folder;
+    int64_t fullscreen = ElisaFullscreenUnset;
+    int64_t config_mode = ElisaConfigDefault;
+    int64_t wait_pid = 0;
+    int64_t game_arg_count = 0;
+    std::string first_game_arg;
+    bool ok = false;
+    bool ignore_game_patch = false;
+    bool show_fps = false;
+    bool log_append = false;
+    bool wait_for_debugger = false;
+    bool has_wait_pid = false;
+};
+
+#ifdef SHADPS4_ENABLE_ELISA_PORTS
+
+bool ElisaLaunchIntentShadowEnabled() {
+    const char* value = std::getenv("SHADPS4_ELISA_SHADOW_LAUNCH_INTENT");
+    return value != nullptr && (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+                                std::strcmp(value, "TRUE") == 0);
+}
+
+const char* ElisaString(uint8_t* value) {
+    return value != nullptr ? reinterpret_cast<const char*>(value) : "";
+}
+
+bool ElisaIntentMatches(const ShadLaunchIntentCABI& elisa, const LaunchIntentShadow& cpp) {
+    return elisa.kind == cpp.kind && elisa.exit_code == cpp.exit_code &&
+           std::strcmp(ElisaString(elisa.game_path), cpp.game_path.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.patch_file), cpp.patch_file.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.override_root), cpp.override_root.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.add_game_folder), cpp.add_game_folder.c_str()) == 0 &&
+           std::strcmp(ElisaString(elisa.set_addon_folder), cpp.set_addon_folder.c_str()) == 0 &&
+           elisa.fullscreen == cpp.fullscreen && elisa.config_mode == cpp.config_mode &&
+           elisa.wait_pid == cpp.wait_pid && elisa.game_arg_count == cpp.game_arg_count &&
+           std::strcmp(ElisaString(elisa.first_game_arg), cpp.first_game_arg.c_str()) == 0 &&
+           static_cast<bool>(elisa.ok) == cpp.ok &&
+           static_cast<bool>(elisa.ignore_game_patch) == cpp.ignore_game_patch &&
+           static_cast<bool>(elisa.show_fps) == cpp.show_fps &&
+           static_cast<bool>(elisa.log_append) == cpp.log_append &&
+           static_cast<bool>(elisa.wait_for_debugger) == cpp.wait_for_debugger &&
+           static_cast<bool>(elisa.has_wait_pid) == cpp.has_wait_pid;
+}
+
+std::string DescribeIntent(const LaunchIntentShadow& intent) {
+    std::ostringstream out;
+    out << "kind=" << intent.kind << " exit=" << intent.exit_code << " ok=" << intent.ok
+        << " game='" << intent.game_path << "' patch='" << intent.patch_file << "' fullscreen="
+        << intent.fullscreen << " config=" << intent.config_mode << " game_args="
+        << intent.game_arg_count << " first_arg='" << intent.first_game_arg << "'";
+    return out.str();
+}
+
+std::string DescribeIntent(const ShadLaunchIntentCABI& intent) {
+    std::ostringstream out;
+    out << "kind=" << intent.kind << " exit=" << intent.exit_code << " ok=" << intent.ok
+        << " game='" << ElisaString(intent.game_path) << "' patch='" << ElisaString(intent.patch_file)
+        << "' fullscreen=" << intent.fullscreen << " config=" << intent.config_mode
+        << " game_args=" << intent.game_arg_count << " first_arg='"
+        << ElisaString(intent.first_game_arg) << "'";
+    return out.str();
+}
+
+void ShadowLaunchIntentWithElisa(int argc, char* argv[], const LaunchIntentShadow& cpp) {
+    if (!ElisaLaunchIntentShadowEnabled()) {
+        return;
+    }
+    if (argc < 0 || argc > 13) {
+        std::cerr << "Elisa launch-intent shadow skipped: argc=" << argc
+                  << " exceeds tiny v1 ABI limit\n";
+        return;
+    }
+
+    std::array<uint8_t*, 13> elisa_argv{};
+    for (auto& arg : elisa_argv) {
+        arg = reinterpret_cast<uint8_t*>(const_cast<char*>(""));
+    }
+    for (int i = 0; i < argc; ++i) {
+        elisa_argv[static_cast<size_t>(i)] = reinterpret_cast<uint8_t*>(argv[i]);
+    }
+
+    ShadLaunchIntentCABI elisa{};
+    const intptr_t abi_ok = shadps4_elisa_parse_launch_intent(
+        argc, elisa_argv[0], elisa_argv[1], elisa_argv[2], elisa_argv[3], elisa_argv[4],
+        elisa_argv[5], elisa_argv[6], elisa_argv[7], elisa_argv[8], elisa_argv[9],
+        elisa_argv[10], elisa_argv[11], elisa_argv[12], &elisa);
+    if (!abi_ok || !ElisaIntentMatches(elisa, cpp)) {
+        std::cerr << "Elisa launch-intent shadow mismatch:\n  C++:   " << DescribeIntent(cpp)
+                  << "\n  Elisa: " << DescribeIntent(elisa) << "\n";
+    }
+}
+
+#else
+
+void ShadowLaunchIntentWithElisa(int, char*[], const LaunchIntentShadow&) {}
+
+#endif
+
+} // namespace
 
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
@@ -87,6 +220,10 @@ int main(int argc, char* argv[]) {
 
     // ---- No-args behavior ----
     if (argc == 1) {
+        ShadowLaunchIntentWithElisa(argc, argv,
+                                    LaunchIntentShadow{.kind = ElisaIntentNoArgs,
+                                                       .exit_code = -1,
+                                                       .ok = true});
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "shadPS4",
                                  "This is a CLI application. Please use the QTLauncher for a GUI:\n"
                                  "https://github.com/shadps4-emu/shadps4-qtlauncher/releases",
@@ -100,6 +237,70 @@ int main(int argc, char* argv[]) {
     } catch (const CLI::ParseError& e) {
         return app.exit(e);
     }
+
+    LaunchIntentShadow launchIntentShadow{};
+    launchIntentShadow.kind = ElisaIntentRun;
+    launchIntentShadow.exit_code = 0;
+    launchIntentShadow.ok = true;
+    launchIntentShadow.patch_file = patchFile.value_or("");
+    launchIntentShadow.override_root = overrideRoot ? overrideRoot->string() : "";
+    launchIntentShadow.ignore_game_patch = ignoreGamePatch;
+    launchIntentShadow.show_fps = showFps;
+    launchIntentShadow.log_append = Common::Log::g_should_append;
+    launchIntentShadow.wait_for_debugger = waitForDebugger;
+    launchIntentShadow.has_wait_pid = waitPid.has_value();
+    launchIntentShadow.wait_pid = waitPid.value_or(0);
+    if (fullscreenStr) {
+        if (*fullscreenStr == "true") {
+            launchIntentShadow.fullscreen = ElisaFullscreenTrue;
+        } else if (*fullscreenStr == "false") {
+            launchIntentShadow.fullscreen = ElisaFullscreenFalse;
+        } else {
+            launchIntentShadow.kind = ElisaIntentError;
+            launchIntentShadow.exit_code = 1;
+            launchIntentShadow.ok = false;
+        }
+    }
+    if (configClean) {
+        launchIntentShadow.config_mode = ElisaConfigClean;
+    }
+    if (configGlobal) {
+        launchIntentShadow.config_mode = ElisaConfigGlobal;
+    }
+    if (bigPicture) {
+        launchIntentShadow.kind = ElisaIntentBigPicture;
+    } else if (addGameFolder) {
+        launchIntentShadow.kind = ElisaIntentAddGameFolder;
+        launchIntentShadow.add_game_folder = addGameFolder->string();
+    } else if (setAddonFolder) {
+        launchIntentShadow.kind = ElisaIntentSetAddonFolder;
+        launchIntentShadow.set_addon_folder = setAddonFolder->string();
+    } else if (!gamePath.has_value()) {
+        if (!gameArgs.empty()) {
+            launchIntentShadow.game_path = gameArgs.front();
+            launchIntentShadow.game_arg_count = static_cast<int64_t>(gameArgs.size() - 1);
+            if (gameArgs.size() > 1) {
+                launchIntentShadow.first_game_arg = gameArgs[1];
+            }
+        } else {
+            launchIntentShadow.kind = ElisaIntentError;
+            launchIntentShadow.exit_code = 1;
+            launchIntentShadow.ok = false;
+        }
+    } else {
+        launchIntentShadow.game_path = *gamePath;
+        if (!gameArgs.empty() && gameArgs.front() == "--") {
+            launchIntentShadow.game_arg_count = static_cast<int64_t>(gameArgs.size() - 1);
+            if (gameArgs.size() > 1) {
+                launchIntentShadow.first_game_arg = gameArgs[1];
+            }
+        } else if (!gameArgs.empty()) {
+            launchIntentShadow.kind = ElisaIntentError;
+            launchIntentShadow.exit_code = 1;
+            launchIntentShadow.ok = false;
+        }
+    }
+    ShadowLaunchIntentWithElisa(argc, argv, launchIntentShadow);
 
     if (waitPid)
         Core::Debugger::WaitForPid(*waitPid);
