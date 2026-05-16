@@ -14,47 +14,54 @@ const MACOS_KINFO_PROC_SIZE: u64 = 648
 const MACOS_KINFO_PROC_P_FLAG_OFFSET: usize = 32
 const MACOS_P_TRACED: int = 2048
 
-extern getpid() -> int can[Sys.FFI, SysProcess.Poll]
-extern kill(pid: int, sig: int) -> int can[Sys.FFI, SysProcess.Poll]
-extern sysctl(name: mutable int&, namelen: u32, oldp: mutable u8&, oldlenp: mutable u64&, newp: u8&, newlen: u64) -> int can[Sys.FFI, SysProcess.Poll]
-extern usleep(usec: u32) -> int can[Sys.FFI, Clock.Sleep]
+static if ELISA_TARGET_OS_POSIX:
+    extern getpid() -> int can[Sys.FFI, SysProcess.Poll]
+    extern kill(pid: int, sig: int) -> int can[Sys.FFI, SysProcess.Poll]
+    extern usleep(usec: u32) -> int can[Sys.FFI, Clock.Sleep]
+
+static if ELISA_TARGET_OS_MACOS:
+    extern sysctl(name: mutable int&, namelen: u32, oldp: mutable u8&, oldlenp: mutable u64&, newp: uintptr, newlen: u64) -> int can[Sys.FFI, SysProcess.Poll]
 
 def shad_debugger_current_pid() -> int can[Sys.FFI, SysProcess.Poll]:
-    can Sys.FFI, SysProcess.Poll:
-        return getpid()
+    static if ELISA_TARGET_OS_POSIX:
+        can Sys.FFI, SysProcess.Poll:
+            return getpid()
+    static else:
+        return 0
 
 def shad_debugger_process_exists(pid: int) -> bool can[Sys.FFI, SysProcess.Poll]:
-    can Sys.FFI, SysProcess.Poll:
-        return kill(pid, 0) == 0
+    static if ELISA_TARGET_OS_POSIX:
+        can Sys.FFI, SysProcess.Poll:
+            return kill(pid, 0) == 0
+    static else:
+        return false
 
 def shad_debugger_sleep_ms(ms: u32) -> void can[Sys.FFI, Clock.Sleep]:
-    can Sys.FFI, Clock.Sleep:
-        usleep(ms * 1000)
-
-def shad_debugger_null_u8_ref() -> u8&:
-    trusted Unsafe.PointerCast:
-        return 0.uintptr().cast[u8&]
-
-def shad_debugger_read_i32_at(buffer: mutable u8&, offset: usize) -> int:
-    trusted Unsafe.PointerArithmetic, Unsafe.PointerCast:
-        slot: mutable int& = (buffer + offset).cast[mutable int&]
-        return slot[0]
+    static if ELISA_TARGET_OS_POSIX:
+        can Sys.FFI, Clock.Sleep:
+            usleep(ms * 1000)
 
 def shad_debugger_is_debugger_attached() -> bool can[Sys.FFI, SysProcess.Poll]:
-    mib: mutable int[4] = zeroed
-    info: mutable u8[648] = zeroed
-    size: mutable u64 = MACOS_KINFO_PROC_SIZE
-    result: mutable int = -1
-    mib[0] <- MACOS_CTL_KERN
-    mib[1] <- MACOS_KERN_PROC
-    mib[2] <- MACOS_KERN_PROC_PID
-    can Sys.FFI, SysProcess.Poll:
-        mib[3] <- getpid()
-        result <- sysctl(mib[0].ref[mutable int&], 4, info[0].ref[mutable u8&], size.ref[mutable u64&], shad_debugger_null_u8_ref(), 0)
-    if result != 0:
+    static if ELISA_TARGET_OS_MACOS:
+        mib: mutable int[4] = zeroed
+        info: mutable u8[648] = zeroed
+        size: mutable u64 = MACOS_KINFO_PROC_SIZE
+        result: mutable int = -1
+        mib[0] <- MACOS_CTL_KERN
+        mib[1] <- MACOS_KERN_PROC
+        mib[2] <- MACOS_KERN_PROC_PID
+        can Sys.FFI, SysProcess.Poll:
+            mib[3] <- getpid()
+            result <- sysctl(mib[0].ref[mutable int&], 4, info[0].ref[mutable u8&], size.ref[mutable u64&], 0.uintptr(), 0)
+        if result != 0:
+            return false
+        flags: mutable int = 0
+        trusted Unsafe.PointerArithmetic, Unsafe.PointerCast:
+            slot: mutable int& = (info[0].ref[mutable u8&] + MACOS_KINFO_PROC_P_FLAG_OFFSET).cast[mutable int&]
+            flags <- slot[0]
+        return (flags & MACOS_P_TRACED) != 0
+    static else:
         return false
-    flags: int = shad_debugger_read_i32_at(info[0].ref[mutable u8&], MACOS_KINFO_PROC_P_FLAG_OFFSET)
-    return (flags & MACOS_P_TRACED) != 0
 
 def shad_debugger_wait_for_pid_exit(pid: int, poll_ms: u32, max_polls: i64) -> int can[Clock.Sleep, Sys.FFI, SysProcess.Poll]:
     polls: mutable i64 = 0
