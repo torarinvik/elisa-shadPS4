@@ -291,6 +291,8 @@ public:
 
     void InvalidateMemory(VAddr addr, u64 size) const;
 
+    bool HandleRelocatedAccessFault(void* context, void* fault_address);
+
 private:
     VMAHandle FindVMA(VAddr target) {
         return std::prev(vma_map.upper_bound(target));

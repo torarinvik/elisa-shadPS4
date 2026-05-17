@@ -5,6 +5,7 @@
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/debug.h"
+#include "common/decoder.h"
 #include "common/elf_info.h"
 #include "core/emulator_settings.h"
 #include "core/file_sys/fs.h"
@@ -12,16 +13,34 @@
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/process.h"
 #include "core/memory.h"
+#include "core/signals.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+#include <array>
 #include <cstdlib>
+#include <limits>
+
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+#include <sys/ucontext.h>
+#endif
 
 namespace Core {
+
+static bool RelocatedAccessViolationHandler(void* context, void* fault_address) {
+    return Memory::Instance()->HandleRelocatedAccessFault(context, fault_address);
+}
 
 static bool IsAppleFixedRelocationEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_ALLOW_APPLE_FIXED_RELOCATION");
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+        if (value != nullptr && std::string_view{value} == "0") {
+            return false;
+        }
+        return true;
+#else
         return value != nullptr && std::string_view{value} == "1";
+#endif
     }();
     return enabled;
 }
@@ -54,6 +73,14 @@ static void LogInvalidFixedMapping(VAddr virtual_addr, u64 size, std::string_vie
 
 MemoryManager::MemoryManager() {
     LOG_INFO(Kernel_Vmm, "Virtual memory space initialized with regions:");
+
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+    // Page-manager faults should get first chance. If a fault is not from GPU memory protection,
+    // this handler can still salvage guest pointers whose fixed mappings had to be relocated out
+    // of macOS' Rosetta/Metal reserved address hole.
+    Signals::Instance()->RegisterAccessViolationHandler(
+        RelocatedAccessViolationHandler, std::numeric_limits<u32>::min() + 1);
+#endif
 
     // Construct vma_map using the regions reserved by the address space
     auto regions = impl.GetUsableRegions();
@@ -406,9 +433,9 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
     const auto original_addr = virtual_addr;
     virtual_addr = ResolveRelocatedAddress(virtual_addr);
     if (virtual_addr != original_addr) {
-        LOG_WARNING(Kernel_Vmm, "Redirecting pooled commit from relocated guest address {:#x} "
-                                "to host-mapped address {:#x}, size={:#x}",
-                    original_addr, virtual_addr, size);
+        LOG_TRACE(Kernel_Vmm, "Redirecting pooled commit from relocated guest address {:#x} "
+                              "to host-mapped address {:#x}, size={:#x}",
+                  original_addr, virtual_addr, size);
     }
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
@@ -1525,6 +1552,143 @@ VAddr MemoryManager::ResolveRelocatedAddress(VAddr virtual_addr) const {
         return mapping.relocated + (virtual_addr - mapping.original);
     }
     return virtual_addr;
+}
+
+bool MemoryManager::HandleRelocatedAccessFault(void* context, void* fault_address) {
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+    const auto fault_addr = reinterpret_cast<VAddr>(fault_address);
+    std::shared_lock lk{mutex};
+    const auto translated_fault_addr = ResolveRelocatedAddress(fault_addr);
+    if (translated_fault_addr == fault_addr) {
+        return false;
+    }
+
+    auto& state = reinterpret_cast<ucontext_t*>(context)->uc_mcontext->__ss;
+    const auto register_slot = [&](ZydisRegister reg) -> std::pair<const char*, u64*> {
+        switch (reg) {
+        case ZYDIS_REGISTER_RAX:
+        case ZYDIS_REGISTER_EAX:
+            return {"rax", &state.__rax};
+        case ZYDIS_REGISTER_RBX:
+        case ZYDIS_REGISTER_EBX:
+            return {"rbx", &state.__rbx};
+        case ZYDIS_REGISTER_RCX:
+        case ZYDIS_REGISTER_ECX:
+            return {"rcx", &state.__rcx};
+        case ZYDIS_REGISTER_RDX:
+        case ZYDIS_REGISTER_EDX:
+            return {"rdx", &state.__rdx};
+        case ZYDIS_REGISTER_RDI:
+        case ZYDIS_REGISTER_EDI:
+            return {"rdi", &state.__rdi};
+        case ZYDIS_REGISTER_RSI:
+        case ZYDIS_REGISTER_ESI:
+            return {"rsi", &state.__rsi};
+        case ZYDIS_REGISTER_RBP:
+        case ZYDIS_REGISTER_EBP:
+            return {"rbp", &state.__rbp};
+        case ZYDIS_REGISTER_RSP:
+        case ZYDIS_REGISTER_ESP:
+            return {"rsp", &state.__rsp};
+        case ZYDIS_REGISTER_R8:
+        case ZYDIS_REGISTER_R8D:
+            return {"r8", &state.__r8};
+        case ZYDIS_REGISTER_R9:
+        case ZYDIS_REGISTER_R9D:
+            return {"r9", &state.__r9};
+        case ZYDIS_REGISTER_R10:
+        case ZYDIS_REGISTER_R10D:
+            return {"r10", &state.__r10};
+        case ZYDIS_REGISTER_R11:
+        case ZYDIS_REGISTER_R11D:
+            return {"r11", &state.__r11};
+        case ZYDIS_REGISTER_R12:
+        case ZYDIS_REGISTER_R12D:
+            return {"r12", &state.__r12};
+        case ZYDIS_REGISTER_R13:
+        case ZYDIS_REGISTER_R13D:
+            return {"r13", &state.__r13};
+        case ZYDIS_REGISTER_R14:
+        case ZYDIS_REGISTER_R14D:
+            return {"r14", &state.__r14};
+        case ZYDIS_REGISTER_R15:
+        case ZYDIS_REGISTER_R15D:
+            return {"r15", &state.__r15};
+        default:
+            return {nullptr, nullptr};
+        }
+    };
+
+    const auto read_reg = [&](ZydisRegister reg) -> u64 {
+        auto [_, slot] = register_slot(reg);
+        return slot != nullptr ? *slot : 0;
+    };
+
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    const auto status =
+        Common::Decoder::Instance()->decodeInstruction(instruction, operands,
+                                                       reinterpret_cast<void*>(state.__rip));
+    if (!ZYAN_SUCCESS(status)) {
+        return false;
+    }
+
+    const auto calc_address = [&](const ZydisDecodedOperand& operand) -> VAddr {
+        u64 address = static_cast<u64>(operand.mem.disp.value);
+        if (operand.mem.base == ZYDIS_REGISTER_RIP) {
+            address += state.__rip + instruction.length;
+        } else if (operand.mem.base != ZYDIS_REGISTER_NONE) {
+            address += read_reg(operand.mem.base);
+        }
+        if (operand.mem.index != ZYDIS_REGISTER_NONE) {
+            address += read_reg(operand.mem.index) * operand.mem.scale;
+        }
+        return address;
+    };
+
+    const auto patch_register = [&](ZydisRegister reg, const ZydisDecodedOperand& operand) -> bool {
+        auto [name, slot] = register_slot(reg);
+        if (slot == nullptr) {
+            return false;
+        }
+        const auto old_value = *slot;
+        const auto new_value = ResolveRelocatedAddress(old_value);
+        if (new_value == old_value) {
+            return false;
+        }
+        *slot = new_value;
+        const auto patched_address = calc_address(operand);
+        if (patched_address != translated_fault_addr) {
+            *slot = old_value;
+            return false;
+        }
+        LOG_TRACE(Kernel_Vmm,
+                  "Patched {} from relocated guest pointer {:#x} to host-mapped address {:#x} "
+                  "for fault at {:#x} -> {:#x}",
+                  name, old_value, new_value, fault_addr, translated_fault_addr);
+        return true;
+    };
+
+    for (u8 i = 0; i < instruction.operand_count; i++) {
+        const auto& operand = operands[i];
+        if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY || calc_address(operand) != fault_addr) {
+            continue;
+        }
+        if (operand.mem.base != ZYDIS_REGISTER_NONE &&
+            operand.mem.base != ZYDIS_REGISTER_RIP &&
+            patch_register(operand.mem.base, operand)) {
+            return true;
+        }
+        if (operand.mem.index != ZYDIS_REGISTER_NONE &&
+            patch_register(operand.mem.index, operand)) {
+            return true;
+        }
+    }
+
+    return false;
+#else
+    return false;
+#endif
 }
 
 MemoryManager::VMAHandle MemoryManager::MergeAdjacent(VMAMap& handle_map, VMAHandle iter) {
