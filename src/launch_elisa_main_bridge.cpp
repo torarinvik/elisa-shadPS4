@@ -199,13 +199,36 @@ extern "C" intptr_t shadps4_elisa_pipeline_set_config_mode(int64_t mode) {
     return 0;
 }
 
-extern "C" uint8_t* shadps4_elisa_pipeline_resolve_game_path(uint8_t* game_path) {
+extern "C" intptr_t shadps4_elisa_pipeline_path_exists(uint8_t* path) {
+    return std::filesystem::exists(std::filesystem::path(ElisaString(path))) ? 1 : 0;
+}
+
+extern "C" int64_t shadps4_elisa_pipeline_game_install_dir_count() {
+    return static_cast<int64_t>(EmulatorSettings.GetGameInstallDirs().size());
+}
+
+extern "C" uint8_t* shadps4_elisa_pipeline_game_install_dir_at(int64_t index) {
+    thread_local std::string install_dir_path;
+    install_dir_path.clear();
+
+    const auto& install_dirs = EmulatorSettings.GetGameInstallDirs();
+    if (index >= 0 && static_cast<size_t>(index) < install_dirs.size()) {
+        install_dir_path = install_dirs[static_cast<size_t>(index)].string();
+    }
+
+    return reinterpret_cast<uint8_t*>(install_dir_path.data());
+}
+
+extern "C" uint8_t* shadps4_elisa_pipeline_find_game_by_id(uint8_t* install_dir,
+                                                            uint8_t* game_id) {
     thread_local std::string resolved_path;
     resolved_path.clear();
 
-    const auto eboot_path = LaunchPipeline::ResolveGamePathOrId(ElisaString(game_path));
-    if (eboot_path) {
-        resolved_path = eboot_path->string();
+    constexpr int max_depth = 5;
+    if (auto found_path =
+            Common::FS::FindGameByID(std::filesystem::path(ElisaString(install_dir)),
+                                     ElisaString(game_id), max_depth)) {
+        resolved_path = found_path->string();
     }
 
     return reinterpret_cast<uint8_t*>(resolved_path.data());

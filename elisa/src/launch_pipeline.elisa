@@ -33,7 +33,10 @@ extern shadps4_elisa_pipeline_set_ignore_game_patch() -> int can[LaunchNative.FF
 extern shadps4_elisa_pipeline_set_fullscreen(enabled: int) -> int can[LaunchNative.FFI, HostLaunchPipeline.LaunchFlags]
 extern shadps4_elisa_pipeline_set_show_fps() -> int can[LaunchNative.FFI, HostLaunchPipeline.LaunchFlags]
 extern shadps4_elisa_pipeline_set_config_mode(mode: i64) -> int can[LaunchNative.FFI, HostLaunchPipeline.LaunchFlags]
-extern shadps4_elisa_pipeline_resolve_game_path(game_path: u8&) -> cstr can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]
+extern shadps4_elisa_pipeline_path_exists(path: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]
+extern shadps4_elisa_pipeline_game_install_dir_count() -> i64 can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]
+extern shadps4_elisa_pipeline_game_install_dir_at(index: i64) -> cstr can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]
+extern shadps4_elisa_pipeline_find_game_by_id(install_dir: cstr, game_id: u8&) -> cstr can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]
 extern shadps4_elisa_pipeline_run_emulator(executable_name: u8&, wait_for_debugger: int, resolved_game_path: cstr, argc: i64, argv: u8&&, game_arg_start_index: i64, game_arg_count: i64, override_root: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.StartEmulator]
 
 module LaunchPipeline:
@@ -116,7 +119,20 @@ module LaunchPipeline:
 
     def resolve_game_path(intent: mutable ShadLaunchIntentCABI&) -> cstr can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]:
         can LaunchNative.FFI, HostLaunchPipeline.ResolveGame:
-            return shadps4_elisa_pipeline_resolve_game_path(intent.game_path)
+            if shadps4_elisa_pipeline_path_exists(intent.game_path) != 0:
+                return intent.game_path.cast[cstr]
+
+            install_dir_count: i64 = shadps4_elisa_pipeline_game_install_dir_count()
+            index: mutable i64 = 0
+            trusted Unsafe.AssumeProgress:
+                while index < install_dir_count:
+                    install_dir: cstr = shadps4_elisa_pipeline_game_install_dir_at(index)
+                    resolved_path: cstr = shadps4_elisa_pipeline_find_game_by_id(install_dir, intent.game_path)
+                    if not shad_launch_streq(resolved_path, ""):
+                        return resolved_path
+                    index <- index + 1
+
+            return ""
 
     def run_emulator(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&, resolved_game_path: cstr) -> int can[LaunchNative.FFI, HostLaunchPipeline.StartEmulator]:
         can LaunchNative.FFI, HostLaunchPipeline.StartEmulator:
