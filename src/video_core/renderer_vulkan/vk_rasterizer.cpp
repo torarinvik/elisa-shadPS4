@@ -1107,13 +1107,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                     image.Transit(vk::ImageLayout::eGeneral,
                                   vk::AccessFlagBits2::eShaderRead |
                                       vk::AccessFlagBits2::eShaderWrite,
-                                  desc.view_info.range);
+                                  image_view.info.range);
                 } else {
                     const auto new_layout = image.info.props.is_depth
                                                 ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
                                                 : vk::ImageLayout::eShaderReadOnlyOptimal;
                     image.Transit(new_layout, vk::AccessFlagBits2::eShaderRead,
-                                  desc.view_info.range);
+                                  image_view.info.range);
                 }
             }
             image.usage.storage |= is_storage;
@@ -1339,7 +1339,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             image->Transit(vk::ImageLayout::eColorAttachmentOptimal,
                            vk::AccessFlagBits2::eColorAttachmentWrite |
                                vk::AccessFlagBits2::eColorAttachmentRead,
-                           desc.view_info.range);
+                           image_view.info.range);
         }
 
         state.width = std::min<u32>(state.width, std::max(image->info.size.width >> mip, 1u));
@@ -1414,7 +1414,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         image.Transit(new_layout,
                       vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
                           vk::AccessFlagBits2::eDepthStencilAttachmentRead,
-                      desc.view_info.range);
+                      image_view.info.range);
 
         state.width = std::min<u32>(state.width, image.info.size.width);
         state.height = std::min<u32>(state.height, image.info.size.height);

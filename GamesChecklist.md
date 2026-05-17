@@ -5,24 +5,38 @@
 | Acquired | Game | Title ID | Details |
 |---|---|---|---|
 | [x] | EA Sports UFC | CUSA00264 | Tested. Runs, then hits the known render black-screen bug. Strict watchdog shows the black frame starts upstream of final presentation; next step is VideoOut compute input tracing for shader `0xc455a5aa2c447041`. |
+| [x] | DRIVECLUB | CUSA00003 | Extracted and present; not tested. |
+| [x] | Need for Speed Rivals | CUSA00168 | Extracted and present; not tested. |
+| [x] | The Amazing Spider-Man 2 | CUSA00394 | Extracted and present; not tested. |
+| [x] | Tearaway Unfolded | CUSA00562 | Extracted and present; not tested. |
 | [x] | UFC 2 | CUSA01968 | not tested |
 | [x] | Hasbro Family Fun Pack | CUSA03312 | Tested. Initially quit when entering fullscreen; after macOS permission/restart it ran further. Needs current retest for exact playable state. |
 | [x] | Joe's Diner | CUSA03774 | Tested. Starts and accepts movement input from arrow keys/left stick, but expected keyboard button bindings such as X/C/Z did not work. Needs input mapping follow-up. |
+| [x] | WORLD OF FINAL FANTASY | CUSA04647 | Extracted and present; not tested. |
 | [x] | Yooka-Laylee | CUSA05721 | Tested. Boots into scene/menu path, but has severe flicker/distortion/missing geometry and did not advance from the "press X" prompt with keyboard X. |
 | [x] | Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | Tested. Boots and reaches in-game visual-novel scenes. Input combo prompt `R1 + Square` maps to keyboard `U + Z`; game appeared to work normally during the initial test. |
-| [x] | UFC 3 | CUSA06534 | Tested. Reaches the loading percentage screen, then strict render validation aborts on an out-of-bounds image view request: `R16G16B16A16Uint` image has 1 layer but the view requests `base_layer=2`. |
+| [x] | UFC 3 | CUSA06534 | Retested after image-view range and depth-stencil compatibility hardening. The old `GetBarriers` out-of-bounds layer assert is fixed, the Metal/MoltenVK `R16Uint` view-of-depth abort is fixed, and incompatible direct image copies are skipped instead of crashing. Short watchdog run no longer crashed and reached playtime updates around 3 minutes before the external timeout killed it. Needs manual visual/audio assessment. |
 | [x] | UFC 3 Patch v1.14 | CUSA06534-patch | Patch folder; not tested independently. |
+| [x] | OKAMI HD | CUSA08364 | Extracted and present; not tested. |
+| [x] | SHADOW OF THE COLOSSUS | CUSA08809 | Extracted and present; not tested. |
 | [x] | Beast Quest | CUSA09052 | Tested. Starts, plays audio/narrator, then reaches a black screen similar to the UFC black-screen bucket. Also showed startup flicker/distortion. |
 | [x] | SEGA Mega Drive Classics | CUSA09771 | Tested. Reaches the "press button to continue" screen, then enters a black-screen state while audio/game logic continues. No strict render-validation assert was captured in this run; log is dominated by repeated metadata texture-read warnings and net stub spam. |
+| [x] | Biomutant | CUSA09848 | Extracted and present; not tested. |
 | [x] | The Witch and the Hundred Knight 2 | CUSA10135 | Retested after NGS2 hardening and AT9 waveform decoding/mixing. Previously crashed after logo/audio loading in `PhyreEngineWorkerThread` from an uninitialized/bogus audio metadata path. Now appears to work fine during manual play; audio works and the old crash was not reproduced. |
-| [x] | EA Sports UFC 4 | CUSA14204 | Tested. Reaches the first loading screen, then aborts in Metal/MoltenVK texture-view validation: source texture is `MTLPixelFormatDepth16Unorm` but the requested view format is `MTLPixelFormatR16Uint`. |
-| [x] | Zero Strain | CUSA18570 | Retested after macOS fixed-mapping relocation and host sidecar filtering. Previously exited in the fixed-address mapping bucket, then hit a macOS `.DS_Store` directory-iteration crash after relocation. Now gets past both and reaches playtime updates under watchdog, exiting only via timeout. Needs manual visual/audio playtest. |
+| [x] | Borderlands: Game of the Year Edition | CUSA10455 | Extracted and present; not tested. |
+| [x] | EA Sports UFC 4 | CUSA14204 | Retested after depth-stencil compatibility hardening. The old Metal/MoltenVK `Depth16Unorm` viewed as `R16Uint` abort is fixed. It reaches the UFC4 loading-tip screen and playtime keeps advancing, but appears stuck during the transition from `loadingScreen_0.mkv` to `homeGenericBackground.mkv`; logs are dominated by repeated DirtySDK `sceNetEpollCreate`/`sceNetEpollControl` activity. Current bucket: menu/movie/network transition stall rather than render-driver crash. |
+| [x] | Crysis Remastered | CUSA18671 | Extracted and present; not tested. |
+| [x] | Crysis 3 Remastered | CUSA18673 | Extracted and present; not tested. |
+| [x] | Zero Strain | CUSA18570 | Retested after macOS fixed-mapping relocation and host sidecar filtering. Previously exited in the fixed-address mapping bucket, then hit a macOS `.DS_Store` directory-iteration crash after relocation. Now gets past both and reaches playtime updates; live manual run exited cleanly. Current state: black screen and no audio, likely the next renderer/audio initialization bucket rather than a launch crash. |
 | [x] | New Super Lucky's Tale | CUSA20302 | Tested. Reaches the start screen; when pressing a button to advance, strict render validation aborts on unsupported `B4G4R4A4UnormPack16` 2D image creation with sampled/color-attachment usage. |
-| [x] | Race With Ryan Road Trip Deluxe Edition | CUSA23279 | Retested after macOS fixed-mapping relocation hardening. Previously crashed when `sceKernelMapNamedDirectMemory` requested `0x4000000000` inside the Rosetta/Metal reserved hole. Now the Apple relocation path is enabled by default and the precise relocated-pointer fault handler lets the game survive watchdog runs instead of crashing; timed test reached normal playtime updates and exited only via timeout. Needs manual visual/audio playtest. |
+| [x] | Race With Ryan Road Trip Deluxe Edition | CUSA23279 | Retested after macOS fixed-mapping relocation hardening. Previously crashed when `sceKernelMapNamedDirectMemory` requested `0x4000000000` inside the Rosetta/Metal reserved hole. Now the Apple relocation path is enabled by default and the precise relocated-pointer fault handler lets the game survive and exit cleanly; live manual run reached playtime updates. Current state: black screen and no audio, likely the next renderer/audio initialization bucket rather than a launch crash. |
 | [x] | Katamari Damacy Reroll | CUSA24361 | Tested. Appears to work/playable during manual play. Strict black-screen watchdog stayed nonblack and no GPU wait timeout or crash was observed. Log is noisy with repeated `Unexpected metadata read by a shader (texture)` warnings, but they do not currently block gameplay. |
 | [x] | Stray | CUSA24899 | not tested |
+| [x] | SpongeBob SquarePants: The Cosmic Shake | CUSA30582 | Extracted and present; not tested. |
 | [x] | Teenage Mutant Ninja Turtles: Shredder's Revenge | CUSA30991 | Tested. Works well enough to reach startup, main menu, and gameplay after fixing the flexible-memory/`sceKernelMunmap(0, ...)` quit path. Startup music works; user observed no in-game audio yet. |
+| [x] | Redout 2 | CUSA31411 | Extracted and present; not tested. |
 | [x] | Gigantosaurus: Dino Sports | CUSA43402 | Tested. Appears to work/playable during manual play, with occasional flicker. No GPU wait timeout, crash, or strict black-screen abort occurred. Watchdog first saw a very dark but nonblack frame (`avg_luma` around 7, `near_black` around 96%, nonblack pixels present), then later bright nonblack frames while Unity-style assets loaded and shaders compiled. Log is noisy with repeated `Unexpected metadata read by a shader (texture)` warnings, but they do not currently block gameplay. |
+| [x] | The Smurfs 2: The Prisoner of the Green Stone | CUSA43623 | Extracted and present; not tested. |
 | [ ] | Another Sight | CUSA15308 | Tested, then removed from folder. Blocked by fixed mapping around `0x4000000000`, which overlaps the macOS x86_64-on-Apple-Silicon reserved address hole. |
 | [ ] | Minecraft Dungeons | CUSA18797 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
 | [ ] | Taxi Chaos | CUSA20527 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
@@ -170,12 +184,12 @@ Sorted by approximate PS4 storage size, largest to smallest. Sizes are rough and
 | [ X] | 10 | SEGA Genesis Classics |
 | [X ] | 10 | Hasbro Family Fun Pack |
 | [X ] | 10 | Beast Quest |
-| [ ] | 9 | FINAL FANTASY VI |
-| [ ] | 9 | FINAL FANTASY V |
-| [ ] | 9 | FINAL FANTASY IV |
-| [ ] | 9 | FINAL FANTASY III |
-| [ ] | 9 | FINAL FANTASY II |
-| [ ] | 9 | FINAL FANTASY |
+| [ ] | 9 |  |
+|          |           |                                                     |
+|          |           | Final Fantasy X/X-2 HD Remaster                     |
+|          |           |                                                     |
+|          |           |                                                     |
+|          |           |                                                     |
 | [ X] | 8 | Yooka-Laylee |
 | [X ] | 8 | Blair Witch |
 | [X ] | 8 | Another Sight |

@@ -15,6 +15,7 @@
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
+#include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/host_compatibility.h"
@@ -67,6 +68,20 @@ static bool HasStencil(vk::Format format) {
     default:
         return false;
     }
+}
+
+static bool CanCreateDepthStencilViewAs(const ImageInfo& image_info, vk::Format view_format) {
+    if (!image_info.props.is_depth) {
+        return true;
+    }
+
+    if (IsDepthFormat(image_info.pixel_format) &&
+        Vulkan::LiverpoolToVK::IsFormatDepthCompatible(view_format)) {
+        return true;
+    }
+
+    return HasStencil(image_info.pixel_format) &&
+           Vulkan::LiverpoolToVK::IsFormatStencilCompatible(view_format);
 }
 
 static bool IsBlockFormat(vk::Format format) {
@@ -475,6 +490,20 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             if (safe_to_delete) {
                 FreeImage(cache_image_id);
             }
+            return {merged_image_id, -1, -1};
+        }
+
+        if ((binding == BindingType::Texture || binding == BindingType::Storage) &&
+            cache_image.info.props.is_depth && !image_info.props.is_depth &&
+            !CanCreateDepthStencilViewAs(cache_image.info, image_info.pixel_format)) {
+            LOG_WARNING(Render_Vulkan,
+                        "Avoiding incompatible depth-stencil image reuse requested_addr={:#x} "
+                        "requested_size={} requested_format={} cached_id={} cached_addr={:#x} "
+                        "cached_size={} cached_format={} binding={}",
+                        image_info.guest_address, image_info.guest_size,
+                        vk::to_string(image_info.pixel_format), cache_image_id.index,
+                        cache_image.info.guest_address, cache_image.info.guest_size,
+                        vk::to_string(cache_image.info.pixel_format), BindingTypeName(binding));
             return {merged_image_id, -1, -1};
         }
 

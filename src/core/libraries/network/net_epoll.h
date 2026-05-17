@@ -8,6 +8,7 @@
 
 #include <deque>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -45,18 +46,64 @@ struct Epoll {
         }
     }
 
+    Epoll(const Epoll&) = delete;
+    Epoll& operator=(const Epoll&) = delete;
+
+    Epoll(Epoll&& other) noexcept
+        : events{std::move(other.events)}, name{std::move(other.name)},
+          epoll_fd{std::exchange(other.epoll_fd,
+#ifdef _WIN32
+                                 nullptr
+#else
+                                 -1
+#endif
+                                 )},
+          async_resolutions{std::move(other.async_resolutions)}, destroyed{other.destroyed} {
+        other.destroyed = true;
+    }
+
+    Epoll& operator=(Epoll&& other) noexcept {
+        if (this != &other) {
+            Destroy();
+            events = std::move(other.events);
+            name = std::move(other.name);
+            epoll_fd = std::exchange(other.epoll_fd,
+#ifdef _WIN32
+                                     nullptr
+#else
+                                     -1
+#endif
+            );
+            async_resolutions = std::move(other.async_resolutions);
+            destroyed = other.destroyed;
+            other.destroyed = true;
+        }
+        return *this;
+    }
+
+    ~Epoll() {
+        Destroy();
+    }
+
     bool Destroyed() const noexcept {
         return destroyed;
     }
 
     void Destroy() noexcept {
+        if (destroyed) {
+            return;
+        }
         events.clear();
 #ifdef _WIN32
-        epoll_close(epoll_fd);
-        epoll_fd = nullptr;
+        if (epoll_fd != nullptr) {
+            epoll_close(epoll_fd);
+            epoll_fd = nullptr;
+        }
 #else
-        close(epoll_fd);
-        epoll_fd = -1;
+        if (epoll_fd != -1) {
+            close(epoll_fd);
+            epoll_fd = -1;
+        }
 #endif
         name = "";
         destroyed = true;

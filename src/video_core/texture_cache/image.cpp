@@ -8,6 +8,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
+#include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/image.h"
 
 #include <vk_mem_alloc.h>
@@ -25,6 +26,23 @@ static bool ShouldAbortCopyLayerCoercion() {
     static const bool enabled =
         Common::Trace::EnvEnabled("SHADPS4_STRICT_COPY_LAYER_COERCION_ABORT");
     return IsStrictRenderValidationEnabled() && enabled;
+}
+
+static bool CanDirectCopyImageFormats(const ImageInfo& src_info, const ImageInfo& dst_info,
+                                      vk::ImageAspectFlags src_aspect,
+                                      vk::ImageAspectFlags dst_aspect) {
+    if (src_info.num_samples != dst_info.num_samples) {
+        return false;
+    }
+    if (src_aspect != dst_aspect) {
+        return false;
+    }
+    if (src_info.props.is_depth != dst_info.props.is_depth ||
+        src_info.props.has_stencil != dst_info.props.has_stencil) {
+        return false;
+    }
+    return src_info.pixel_format == dst_info.pixel_format ||
+           IsVulkanFormatCompatible(src_info.pixel_format, dst_info.pixel_format);
 }
 
 static vk::ImageUsageFlags ImageUsageFlags(const Vulkan::Instance* instance,
@@ -591,6 +609,18 @@ void Image::CopyImage(Image& src_image) {
 
     const vk::ImageAspectFlags dst_aspect = aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
 
+    if (!CanDirectCopyImageFormats(src_info, info, src_aspect, dst_aspect)) {
+        LOG_WARNING(Render_Vulkan,
+                    "Skipping incompatible direct image copy src_addr={:#x} src_size={} "
+                    "src_format={} src_samples={} src_aspect={} dst_addr={:#x} dst_size={} "
+                    "dst_format={} dst_samples={} dst_aspect={}",
+                    src_info.guest_address, src_info.guest_size,
+                    vk::to_string(src_info.pixel_format), src_info.num_samples,
+                    vk::to_string(src_aspect), info.guest_address, info.guest_size,
+                    vk::to_string(info.pixel_format), info.num_samples, vk::to_string(dst_aspect));
+        return;
+    }
+
     const bool src_is_2d = ConvertImageType(src_info.type) == vk::ImageType::e2D;
     const bool src_is_3d = ConvertImageType(src_info.type) == vk::ImageType::e3D;
 
@@ -755,6 +785,19 @@ void Image::CopyMip(Image& src_image, u32 mip, u32 slice) {
     const auto mip_d = std::max(info.size.depth >> mip, 1u);
     const auto [src_layers, dst_layers] = SanitizeCopyLayers(src_info, info, mip_d);
     if (src_layers == 0 || dst_layers == 0) {
+        return;
+    }
+
+    if (!CanDirectCopyImageFormats(src_info, info, src_image.aspect_mask, aspect_mask)) {
+        LOG_WARNING(Render_Vulkan,
+                    "Skipping incompatible direct mip copy src_addr={:#x} src_size={} "
+                    "src_format={} src_samples={} src_aspect={} dst_addr={:#x} dst_size={} "
+                    "dst_format={} dst_samples={} dst_aspect={} mip={} slice={}",
+                    src_info.guest_address, src_info.guest_size,
+                    vk::to_string(src_info.pixel_format), src_info.num_samples,
+                    vk::to_string(src_image.aspect_mask), info.guest_address, info.guest_size,
+                    vk::to_string(info.pixel_format), info.num_samples, vk::to_string(aspect_mask),
+                    mip, slice);
         return;
     }
 

@@ -1127,6 +1127,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     texture_cache.UpdateImage(image_id);
 
     Frame* frame = GetRenderFrame();
+    if (frame == nullptr) {
+        LOG_ERROR(Render_Vulkan,
+                  "Skipping VideoOut frame because no reusable presentation frame became "
+                  "available after the GPU wait retry limit cpu_addr={:#x} attr={}x{}",
+                  cpu_address, attribute.attrib.width, attribute.attrib.height);
+        return nullptr;
+    }
     ASSERT_MSG(!IsStrictRenderValidationEnabled() ||
                    (frame != nullptr && frame->image && frame->image_view && frame->imgui_texture &&
                     frame->width > 0 && frame->height > 0),
@@ -1336,6 +1343,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     // Request a free presentation frame.
     Frame* frame = GetRenderFrame();
+    if (frame == nullptr) {
+        LOG_ERROR(Render_Vulkan,
+                  "Skipping blank frame because no reusable presentation frame became available "
+                  "after the GPU wait retry limit");
+        return nullptr;
+    }
 
     auto& scheduler = present_thread ? present_scheduler : draw_scheduler;
     scheduler.EndRendering();
@@ -1797,7 +1810,7 @@ Frame* Presenter::GetRenderFrame() {
             LogGpuWaitTimeout("get_render_frame_present_done", timeout);
             if (AbortGpuWaitIfRetryLimitReached("get_render_frame_present_done",
                                                 timeout_count)) {
-                return frame;
+                return nullptr;
             }
             continue;
         }
