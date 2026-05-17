@@ -89,6 +89,7 @@ generated Elisa header. The intended integration shape is now a static archive:
 ```sh
 go run ./src -emit c-archive -o ../shadPS4/elisa/build/libshadps4_elisa_launch_intent.a ../shadPS4/elisa/src/launch_intent.elisa
 go run ./src build launch_intent_abi --project ../shadPS4/elisa
+go run ./src build main_abi --project ../shadPS4/elisa
 ```
 
 Cross-architecture CMake builds pass an explicit LLVM target triple into the archive builder. You can
@@ -137,7 +138,13 @@ cmake --build build-elisa --target shadps4_elisa_launch_intent_smoke
 ```
 
 When `SHADPS4_ENABLE_ELISA_PORTS=ON`, the main shadPS4 executable links the launch-intent archive
-but still uses the original C++ launch policy by default. To dogfood safely, enable shadow mode:
+and the Elisa main archive. `src/main.cpp` becomes a small platform trampoline: on Windows it still sets
+UTF-8 console output, then calls `shadps4_elisa_main(argc, argv)`. Elisa owns the root branch:
+parse launch intent, handle help/no-args/error exits, and dispatch valid launches through a narrow C++
+executor bridge. The C++ CLI11 parser remains the fallback for non-Elisa builds, no-argument
+help/message-box behavior, help text printing, and ABI failures. Elisa owns launch-time directory
+validation for `--override-root`, `--add-game-folder`, and `--set-addon-folder` through a narrow native
+`FS.Read` predicate. To compare both parsers without changing runtime behavior, enable shadow mode:
 
 ```sh
 SHADPS4_ELISA_SHADOW_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true
@@ -147,22 +154,26 @@ Shadow mode parses the same `argv` through Elisa, compares the normalized launch
 C++ path, and logs mismatches to stderr without changing runtime behavior. Keep this as the default
 porting pattern until fixture coverage is strong enough to flip a specific decision from C++ to Elisa.
 
-For active dogfooding, the executable also has an opt-in replacement path:
+For active dogfooding, the executable now uses the Elisa replacement path directly:
 
 ```sh
-SHADPS4_ELISA_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true
+./build-elisa/shadps4 --game CUSA00264 --fullscreen true
 ```
 
-This asks Elisa to produce the real `CliState` for launch invocations. The C++ CLI11 parser remains the
-default and is still used for no-argument help/message-box behavior. The C ABI passes `argc` plus a real
-`argv` pointer into Elisa, so the replacement path can preserve unbounded guest arguments after `--`
-without returning Elisa-owned heap strings. Elisa reports the guest-argument start index and count, and
-C++ reconstructs the vector from the original process argv.
+This asks Elisa to produce the real `CliState` for launch invocations. The C ABI passes `argc` plus a
+real `argv` pointer into Elisa, so the replacement path can preserve unbounded guest arguments after
+`--` without returning Elisa-owned heap strings. Elisa reports the guest-argument start index and count,
+and C++ reconstructs the vector from the original process argv. If you need to compare against the old
+parser for a local diagnosis, disable the primary Elisa path:
+
+```sh
+SHADPS4_DISABLE_ELISA_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true
+```
 
 A quick error-path smoke that should exit before runtime setup:
 
 ```sh
-SHADPS4_ELISA_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen maybe
+./build-elisa/shadps4 --game CUSA00264 --fullscreen maybe
 ```
 
 On macOS, `cmake/Elisa.cmake` infers `arm64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}` or

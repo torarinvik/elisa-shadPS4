@@ -1,0 +1,11 @@
+include "launch_intent.elisa"
+
+permission HostLaunchPipeline:
+    Run
+
+extern shadps4_elisa_main_run(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.Run]
+
+module LaunchPipeline:
+    def run_parsed_launch(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.Run]:
+        can LaunchNative.FFI, HostLaunchPipeline.Run:
+            return shadps4_elisa_main_run(executable_name, argc, argv, intent)

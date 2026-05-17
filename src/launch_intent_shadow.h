@@ -17,6 +17,7 @@ constexpr int64_t ElisaIntentBigPicture = 2;
 constexpr int64_t ElisaIntentAddGameFolder = 3;
 constexpr int64_t ElisaIntentSetAddonFolder = 4;
 constexpr int64_t ElisaIntentError = 5;
+constexpr int64_t ElisaIntentHelp = 6;
 
 constexpr int64_t ElisaFullscreenUnset = 0;
 constexpr int64_t ElisaFullscreenTrue = 1;

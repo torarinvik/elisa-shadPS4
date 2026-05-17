@@ -17,6 +17,15 @@ LaunchIntent::Shadow ParseCppShadow(const std::vector<std::string>& args) {
     if (args.size() <= 1) {
         return LaunchIntent::NoArgsShadow();
     }
+    for (const auto& arg : args) {
+        if (arg == "--help" || arg == "-h") {
+            LaunchIntent::Shadow out{};
+            out.kind = LaunchIntent::ElisaIntentHelp;
+            out.exit_code = 0;
+            out.ok = true;
+            return out;
+        }
+    }
 
     CLI::App app{"shadPS4 Emulator CLI shadow"};
     std::optional<std::string> game_path;
@@ -131,11 +140,12 @@ bool RunCase(const char* name, const std::vector<std::string>& args) {
 int main() {
     const std::vector<std::pair<const char*, std::vector<std::string>>> cases = {
         {"no_args", {"shadps4"}},
+        {"help", {"shadps4", "--help"}},
         {"normal_game", {"shadps4", "--game", "CUSA00264"}},
         {"positional_game", {"shadps4", "CUSA00264", "--show-fps"}},
         {"fullscreen_true", {"shadps4", "--game", "CUSA00264", "--fullscreen", "true"}},
         {"fullscreen_false", {"shadps4", "--game", "CUSA00264", "--fullscreen", "false"}},
-        {"utility_add_folder", {"shadps4", "--add-game-folder", "/games"}},
+        {"utility_add_folder", {"shadps4", "--add-game-folder", "."}},
         {"config_global_wins", {"shadps4", "--game", "CUSA00264", "--config-clean",
                                 "--config-global"}},
         {"invalid_fullscreen", {"shadps4", "--game", "CUSA00264", "--fullscreen", "maybe"}},

@@ -1,5 +1,5 @@
-#ifndef SHADPS4_ELISA_LAUNCH_INTENT_H
-#define SHADPS4_ELISA_LAUNCH_INTENT_H
+#ifndef SHADPS4_ELISA_MAIN_H
+#define SHADPS4_ELISA_MAIN_H
 
 #include <stdint.h>
 
@@ -39,6 +39,7 @@ typedef struct ShadLaunchIntentCABI {
 
 intptr_t shadps4_elisa_parse_launch_intent(int64_t argc, uint8_t** argv,
                                            ShadLaunchIntentCABI* out);
+intptr_t shadps4_elisa_main(int64_t argc, uint8_t** argv);
 
 #ifdef __cplusplus
 }

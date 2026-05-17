@@ -1,9 +1,16 @@
+permission LaunchNative:
+    FFI
+
+permission LaunchFS:
+    Read
+
 const SHAD_LAUNCH_KIND_RUN: i64 = 0
 const SHAD_LAUNCH_KIND_NO_ARGS: i64 = 1
 const SHAD_LAUNCH_KIND_BIG_PICTURE: i64 = 2
 const SHAD_LAUNCH_KIND_ADD_GAME_FOLDER: i64 = 3
 const SHAD_LAUNCH_KIND_SET_ADDON_FOLDER: i64 = 4
 const SHAD_LAUNCH_KIND_ERROR: i64 = 5
+const SHAD_LAUNCH_KIND_HELP: i64 = 6
 
 const SHAD_FULLSCREEN_UNSET: i64 = 0
 const SHAD_FULLSCREEN_TRUE: i64 = 1
@@ -14,6 +21,8 @@ const SHAD_CONFIG_DEFAULT: i64 = 0
 const SHAD_CONFIG_CLEAN: i64 = 1
 const SHAD_CONFIG_GLOBAL: i64 = 2
 const SHAD_CONFIG_CONFLICT: i64 = 3
+
+extern shadps4_elisa_path_is_directory(path: cstr) -> int can[LaunchNative.FFI, LaunchFS.Read]
 
 struct ShadLaunchIntent layout c:
     kind: i64
@@ -115,6 +124,36 @@ def shad_launch_error(executable: cstr, message: cstr) -> ShadLaunchIntent:
 def shad_launch_no_args(executable: cstr) -> ShadLaunchIntent:
     return ShadLaunchIntent(SHAD_LAUNCH_KIND_NO_ARGS, -1, executable, "", "", "", "", "", "", SHAD_FULLSCREEN_UNSET, SHAD_CONFIG_DEFAULT, 0, 0, 0, "", "", "", "", true, false, false, false, false, false)
 
+def shad_launch_help(executable: cstr) -> ShadLaunchIntent:
+    return ShadLaunchIntent(SHAD_LAUNCH_KIND_HELP, 0, executable, "", "", "", "", "", "", SHAD_FULLSCREEN_UNSET, SHAD_CONFIG_DEFAULT, 0, 0, 0, "", "", "", "", true, false, false, false, false, false)
+
+def shad_launch_directory_exists(path: cstr) -> bool can[LaunchNative.FFI, LaunchFS.Read]:
+    can LaunchNative.FFI, LaunchFS.Read:
+        return shadps4_elisa_path_is_directory(path) != 0
+
+def shad_launch_validate_directories(intent: ShadLaunchIntent) -> ShadLaunchIntent can[LaunchNative.FFI, LaunchFS.Read]:
+    if not intent.ok:
+        return intent
+    if intent.kind == SHAD_LAUNCH_KIND_ADD_GAME_FOLDER:
+        missing_add_game_folder: mutable bool = false
+        can LaunchNative.FFI, LaunchFS.Read:
+            missing_add_game_folder <- not shad_launch_directory_exists(intent.add_game_folder)
+        if missing_add_game_folder:
+            return shad_launch_error(intent.executable_name, "--add-game-folder: Directory does not exist")
+    if intent.kind == SHAD_LAUNCH_KIND_SET_ADDON_FOLDER:
+        missing_set_addon_folder: mutable bool = false
+        can LaunchNative.FFI, LaunchFS.Read:
+            missing_set_addon_folder <- not shad_launch_directory_exists(intent.set_addon_folder)
+        if missing_set_addon_folder:
+            return shad_launch_error(intent.executable_name, "--set-addon-folder: Directory does not exist")
+    if not shad_launch_streq(intent.override_root, ""):
+        missing_override_root: mutable bool = false
+        can LaunchNative.FFI, LaunchFS.Read:
+            missing_override_root <- not shad_launch_directory_exists(intent.override_root)
+        if missing_override_root:
+            return shad_launch_error(intent.executable_name, "--override-root: Directory does not exist")
+    return intent
+
 def shad_launch_bool_flag(value: bool) -> int:
     return 1 if value else 0
 
@@ -197,88 +236,91 @@ def shad_launch_parse_args(argc: i64, argv: u8&&) -> ShadLaunchIntent:
                     extras_mode <- true
                     index <- index + 1
                 else:
-                    if shad_launch_arg_eq(arg, "--game", "-g"):
-                        if index + 1 >= argc:
-                            return shad_launch_error(executable, "missing value for --game")
-                        game_path <- shad_launch_arg_at(argv, index + 1)
-                        index <- index + 2
+                    if shad_launch_arg_eq(arg, "--help", "-h"):
+                        return shad_launch_help(executable)
                     else:
-                        if shad_launch_arg_eq(arg, "--patch", "-p"):
+                        if shad_launch_arg_eq(arg, "--game", "-g"):
                             if index + 1 >= argc:
-                                return shad_launch_error(executable, "missing value for --patch")
-                            patch_file <- shad_launch_arg_at(argv, index + 1)
+                                return shad_launch_error(executable, "missing value for --game")
+                            game_path <- shad_launch_arg_at(argv, index + 1)
                             index <- index + 2
                         else:
-                            if shad_launch_arg_eq(arg, "--fullscreen", "-f"):
+                            if shad_launch_arg_eq(arg, "--patch", "-p"):
                                 if index + 1 >= argc:
-                                    return shad_launch_error(executable, "missing value for --fullscreen")
-                                full_value: cstr = shad_launch_arg_at(argv, index + 1)
-                                if shad_launch_streq(full_value, "true"):
-                                    fullscreen <- SHAD_FULLSCREEN_TRUE
-                                else:
-                                    if shad_launch_streq(full_value, "false"):
-                                        fullscreen <- SHAD_FULLSCREEN_FALSE
-                                    else:
-                                        fullscreen <- SHAD_FULLSCREEN_INVALID
+                                    return shad_launch_error(executable, "missing value for --patch")
+                                patch_file <- shad_launch_arg_at(argv, index + 1)
                                 index <- index + 2
                             else:
-                                if shad_launch_streq(arg, "--override-root"):
+                                if shad_launch_arg_eq(arg, "--fullscreen", "-f"):
                                     if index + 1 >= argc:
-                                        return shad_launch_error(executable, "missing value for --override-root")
-                                    override_root <- shad_launch_arg_at(argv, index + 1)
+                                        return shad_launch_error(executable, "missing value for --fullscreen")
+                                    full_value: cstr = shad_launch_arg_at(argv, index + 1)
+                                    if shad_launch_streq(full_value, "true"):
+                                        fullscreen <- SHAD_FULLSCREEN_TRUE
+                                    else:
+                                        if shad_launch_streq(full_value, "false"):
+                                            fullscreen <- SHAD_FULLSCREEN_FALSE
+                                        else:
+                                            fullscreen <- SHAD_FULLSCREEN_INVALID
                                     index <- index + 2
                                 else:
-                                    if shad_launch_streq(arg, "--wait-for-pid"):
+                                    if shad_launch_streq(arg, "--override-root"):
                                         if index + 1 >= argc:
-                                            return shad_launch_error(executable, "missing value for --wait-for-pid")
-                                        wait_pid <- shad_launch_parse_i64(shad_launch_arg_at(argv, index + 1))
-                                        has_wait_pid <- true
+                                            return shad_launch_error(executable, "missing value for --override-root")
+                                        override_root <- shad_launch_arg_at(argv, index + 1)
                                         index <- index + 2
                                     else:
-                                        if shad_launch_streq(arg, "--add-game-folder"):
+                                        if shad_launch_streq(arg, "--wait-for-pid"):
                                             if index + 1 >= argc:
-                                                return shad_launch_error(executable, "missing value for --add-game-folder")
-                                            add_game_folder <- shad_launch_arg_at(argv, index + 1)
+                                                return shad_launch_error(executable, "missing value for --wait-for-pid")
+                                            wait_pid <- shad_launch_parse_i64(shad_launch_arg_at(argv, index + 1))
+                                            has_wait_pid <- true
                                             index <- index + 2
                                         else:
-                                            if shad_launch_streq(arg, "--set-addon-folder"):
+                                            if shad_launch_streq(arg, "--add-game-folder"):
                                                 if index + 1 >= argc:
-                                                    return shad_launch_error(executable, "missing value for --set-addon-folder")
-                                                set_addon_folder <- shad_launch_arg_at(argv, index + 1)
+                                                    return shad_launch_error(executable, "missing value for --add-game-folder")
+                                                add_game_folder <- shad_launch_arg_at(argv, index + 1)
                                                 index <- index + 2
                                             else:
-                                                if shad_launch_arg_eq(arg, "--ignore-game-patch", "-i"):
-                                                    ignore_game_patch <- true
-                                                    index <- index + 1
+                                                if shad_launch_streq(arg, "--set-addon-folder"):
+                                                    if index + 1 >= argc:
+                                                        return shad_launch_error(executable, "missing value for --set-addon-folder")
+                                                    set_addon_folder <- shad_launch_arg_at(argv, index + 1)
+                                                    index <- index + 2
                                                 else:
-                                                    if shad_launch_arg_eq(arg, "--big-picture", "-b"):
-                                                        return ShadLaunchIntent(SHAD_LAUNCH_KIND_BIG_PICTURE, 0, executable, "", "", "", "", "", "", SHAD_FULLSCREEN_UNSET, SHAD_CONFIG_DEFAULT, 0, 0, 0, "", "", "", "", true, false, false, false, false, false)
+                                                    if shad_launch_arg_eq(arg, "--ignore-game-patch", "-i"):
+                                                        ignore_game_patch <- true
+                                                        index <- index + 1
                                                     else:
-                                                        if shad_launch_streq(arg, "--wait-for-debugger"):
-                                                            wait_for_debugger <- true
-                                                            index <- index + 1
+                                                        if shad_launch_arg_eq(arg, "--big-picture", "-b"):
+                                                            return ShadLaunchIntent(SHAD_LAUNCH_KIND_BIG_PICTURE, 0, executable, "", "", "", "", "", "", SHAD_FULLSCREEN_UNSET, SHAD_CONFIG_DEFAULT, 0, 0, 0, "", "", "", "", true, false, false, false, false, false)
                                                         else:
-                                                            if shad_launch_streq(arg, "--show-fps"):
-                                                                show_fps <- true
+                                                            if shad_launch_streq(arg, "--wait-for-debugger"):
+                                                                wait_for_debugger <- true
                                                                 index <- index + 1
                                                             else:
-                                                                if shad_launch_streq(arg, "--log-append"):
-                                                                    log_append <- true
+                                                                if shad_launch_streq(arg, "--show-fps"):
+                                                                    show_fps <- true
                                                                     index <- index + 1
                                                                 else:
-                                                                    if shad_launch_streq(arg, "--config-clean"):
-                                                                        config_mode <- SHAD_CONFIG_CLEAN
+                                                                    if shad_launch_streq(arg, "--log-append"):
+                                                                        log_append <- true
                                                                         index <- index + 1
                                                                     else:
-                                                                        if shad_launch_streq(arg, "--config-global"):
-                                                                            config_mode <- SHAD_CONFIG_GLOBAL
+                                                                        if shad_launch_streq(arg, "--config-clean"):
+                                                                            config_mode <- SHAD_CONFIG_CLEAN
                                                                             index <- index + 1
                                                                         else:
-                                                                            if shad_launch_streq(game_path, ""):
-                                                                                game_path <- arg
+                                                                            if shad_launch_streq(arg, "--config-global"):
+                                                                                config_mode <- SHAD_CONFIG_GLOBAL
                                                                                 index <- index + 1
                                                                             else:
-                                                                                return shad_launch_error(executable, "unhandled flags")
+                                                                                if shad_launch_streq(game_path, ""):
+                                                                                    game_path <- arg
+                                                                                    index <- index + 1
+                                                                                else:
+                                                                                    return shad_launch_error(executable, "unhandled flags")
 
     launch_ok: mutable bool = true
     launch_exit: mutable int = 0
@@ -301,8 +343,10 @@ def shad_launch_parse_test_args(argc: i64, arg0: u8&, arg1: u8&, arg2: u8&, arg3
     args: u8&[13] = [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12]
     return shad_launch_parse_args(argc, (&args[0]).cast[u8&&])
 
-def shadps4_elisa_parse_launch_intent_impl(argc: i64, argv: u8&&, out: mutable ShadLaunchIntentFFI&) -> int:
-    intent: ShadLaunchIntent = shad_launch_parse_args(argc, argv)
+def shadps4_elisa_parse_launch_intent_impl(argc: i64, argv: u8&&, out: mutable ShadLaunchIntentFFI&) -> int can[LaunchNative.FFI, LaunchFS.Read]:
+    intent: mutable ShadLaunchIntent = shad_launch_parse_args(argc, argv)
+    can LaunchNative.FFI, LaunchFS.Read:
+        intent <- shad_launch_validate_directories(intent)
     out[0] <- shad_launch_to_ffi(intent)
     return 1
 

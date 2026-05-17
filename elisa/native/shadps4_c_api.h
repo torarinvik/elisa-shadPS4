@@ -9,6 +9,7 @@ extern "C" {
 
 int64_t shadps4_elisa_probe_value(void);
 const char* shadps4_elisa_probe_message(void);
+int shadps4_elisa_path_is_directory(const char* path);
 int shadps4_elisa_find_ufc1(char* out_path, uint64_t out_path_cap);
 int shadps4_elisa_run_ufc_trace(const char* root_dir, const char* profile, uint32_t timeout_ms,
                                 char* out_log_path, uint64_t out_log_path_cap,

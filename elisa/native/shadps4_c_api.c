@@ -46,6 +46,14 @@ const char* shadps4_elisa_last_error(void) {
     return shadps4_elisa_error;
 }
 
+int shadps4_elisa_path_is_directory(const char* path) {
+    if (path == NULL || path[0] == 0) {
+        return 0;
+    }
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 const char* shadps4_elisa_last_log_path(void) {
     shadps4_elisa_log_path_ring_index = (shadps4_elisa_log_path_ring_index + 1) % 8;
     snprintf(shadps4_elisa_log_path_ring[shadps4_elisa_log_path_ring_index],

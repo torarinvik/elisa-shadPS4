@@ -48,6 +48,18 @@ def launch_intent_parses_run_flags() -> void can[Abort.Panic]:
 
 
 @test
+def launch_intent_parses_help_without_game_resolution() -> void can[Abort.Panic]:
+    can Abort.Panic:
+        intent: ShadLaunchIntent = shad_launch_parse_test_args(2, "shadps4", "--help", "", "", "", "", "", "", "", "", "", "", "")
+        if not intent.ok:
+            panic("expected help intent to be ok")
+        if intent.kind != SHAD_LAUNCH_KIND_HELP:
+            panic("expected help intent kind")
+        if intent.exit_code != 0:
+            panic("expected help exit code")
+
+
+@test
 def launch_intent_accepts_positional_game_path_like_main_cpp() -> void can[Abort.Panic]:
     can Abort.Panic:
         intent: ShadLaunchIntent = shad_launch_parse_test_args(4, "shadps4", "CUSA00264", "--show-fps", "--ignore-game-patch", "", "", "", "", "", "", "", "", "")
@@ -73,6 +85,38 @@ def launch_intent_parses_utility_commands_before_run() -> void can[Abort.Panic]:
             panic("expected add-game-folder kind")
         if not shad_launch_streq(intent.add_game_folder, "/games"):
             panic("expected add-game-folder path")
+
+
+@test
+def launch_intent_export_validates_add_game_folder_directory() -> void can[Abort.Panic, LaunchFS.Read, LaunchNative.FFI]:
+    can Abort.Panic:
+        args: u8&[4] = ["shadps4", "--add-game-folder", "/definitely/not/a/shadps4/folder", ""]
+        out: mutable ShadLaunchIntentFFI = shad_launch_to_ffi(shad_launch_no_args("shadps4"))
+        can LaunchNative.FFI, LaunchFS.Read:
+            if shadps4_elisa_parse_launch_intent_impl(3, (&args[0]).cast[u8&&], out.ref[mutable ShadLaunchIntentFFI&]) == 0:
+                panic("expected launch intent export to succeed")
+        if out.ok != 0:
+            panic("expected missing add-game-folder directory to fail in Elisa")
+        if out.kind != SHAD_LAUNCH_KIND_ERROR:
+            panic("expected missing add-game-folder directory to return error kind")
+        if not shad_launch_streq(out.error_message.cast[cstr], "--add-game-folder: Directory does not exist"):
+            panic("expected add-game-folder directory error")
+
+
+@test
+def launch_intent_export_accepts_existing_override_root_directory() -> void can[Abort.Panic, LaunchFS.Read, LaunchNative.FFI]:
+    can Abort.Panic:
+        args: u8&[6] = ["shadps4", "-g", "CUSA00264", "--override-root", ".", ""]
+        out: mutable ShadLaunchIntentFFI = shad_launch_to_ffi(shad_launch_no_args("shadps4"))
+        can LaunchNative.FFI, LaunchFS.Read:
+            if shadps4_elisa_parse_launch_intent_impl(5, (&args[0]).cast[u8&&], out.ref[mutable ShadLaunchIntentFFI&]) == 0:
+                panic("expected launch intent export to succeed")
+        if out.ok == 0:
+            panic("expected existing override-root directory to pass")
+        if out.kind != SHAD_LAUNCH_KIND_RUN:
+            panic("expected existing override-root to keep run kind")
+        if not shad_launch_streq(out.override_root.cast[cstr], "."):
+            panic("expected override-root path to round trip")
 
 
 @test

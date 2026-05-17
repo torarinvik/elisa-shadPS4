@@ -1166,6 +1166,7 @@ add_executable(shadps4
     src/launch_cli.h
     src/launch_pipeline.cpp
     src/launch_pipeline.h
+    src/launch_elisa_main_bridge.cpp
     src/launch_intent_shadow.cpp
     src/launch_intent_shadow.h
     src/main.cpp
@@ -1183,16 +1184,25 @@ target_link_libraries(shadps4 PRIVATE Boost::headers GPUOpen::VulkanMemoryAlloca
 target_link_libraries(shadps4 PRIVATE stb::headers lfreist-hwinfo::hwinfo nlohmann_json::nlohmann_json miniz::miniz fdk-aac CLI11::CLI11 OpenAL::OpenAL Cpp_Httplib)
 
 if (SHADPS4_ENABLE_ELISA_PORTS)
+    add_library(shadps4_elisa_native_bridge STATIC
+        elisa/native/shadps4_c_api.c)
+
     elisa_add_module(shadps4_elisa_launch_intent
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/elisa/src/launch_intent.elisa"
         ABI_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/elisa/native/shadps4_elisa_launch_intent.h"
+        OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/elisa")
+    elisa_add_module(shadps4_elisa_main
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/elisa/src/shadps4_main.elisa"
+        ABI_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/elisa/native/shadps4_elisa_main.h"
         OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/elisa")
     elisa_add_module(shadps4_elisa_debugger
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/elisa/src/debugger.elisa"
         ABI_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/elisa/native/shadps4_elisa_debugger.h"
         OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/elisa")
+    target_link_libraries(shadps4 PRIVATE shadps4_elisa_main)
     target_link_libraries(shadps4 PRIVATE shadps4_elisa_launch_intent)
     target_link_libraries(shadps4 PRIVATE shadps4_elisa_debugger)
+    target_link_libraries(shadps4 PRIVATE shadps4_elisa_native_bridge)
     target_compile_definitions(shadps4 PRIVATE SHADPS4_ENABLE_ELISA_PORTS=1)
 
     add_executable(shadps4_elisa_launch_intent_smoke
@@ -1200,7 +1210,7 @@ if (SHADPS4_ENABLE_ELISA_PORTS)
         elisa/native/launch_intent_smoke.cpp)
     target_compile_definitions(shadps4_elisa_launch_intent_smoke PRIVATE SHADPS4_ENABLE_ELISA_PORTS=1)
     target_include_directories(shadps4_elisa_launch_intent_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(shadps4_elisa_launch_intent_smoke PRIVATE shadps4_elisa_launch_intent CLI11::CLI11)
+    target_link_libraries(shadps4_elisa_launch_intent_smoke PRIVATE shadps4_elisa_launch_intent shadps4_elisa_native_bridge CLI11::CLI11)
 
     add_executable(shadps4_elisa_debugger_smoke
         elisa/native/debugger_smoke.cpp)

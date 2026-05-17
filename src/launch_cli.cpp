@@ -29,9 +29,10 @@ const char* ElisaString(uint8_t* value) {
 }
 
 bool ElisaLaunchIntentEnabled() {
-    const char* value = std::getenv("SHADPS4_ELISA_LAUNCH_INTENT");
-    return value != nullptr && (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
-                                std::strcmp(value, "TRUE") == 0);
+    const char* disabled = std::getenv("SHADPS4_DISABLE_ELISA_LAUNCH_INTENT");
+    return disabled == nullptr ||
+           (std::strcmp(disabled, "1") != 0 && std::strcmp(disabled, "true") != 0 &&
+            std::strcmp(disabled, "TRUE") != 0);
 }
 
 std::optional<ParseResult> TryParseWithElisa(int argc, char* argv[]) {
@@ -67,9 +68,11 @@ std::optional<ParseResult> TryParseWithElisa(int argc, char* argv[]) {
     if (intent.kind == LaunchIntent::ElisaIntentBigPicture) {
         state.big_picture = true;
     } else if (intent.kind == LaunchIntent::ElisaIntentAddGameFolder) {
-        state.add_game_folder = std::filesystem::path(ElisaString(intent.add_game_folder));
+        const char* folder = ElisaString(intent.add_game_folder);
+        state.add_game_folder = std::filesystem::path(folder);
     } else if (intent.kind == LaunchIntent::ElisaIntentSetAddonFolder) {
-        state.set_addon_folder = std::filesystem::path(ElisaString(intent.set_addon_folder));
+        const char* folder = ElisaString(intent.set_addon_folder);
+        state.set_addon_folder = std::filesystem::path(folder);
     } else if (std::strcmp(ElisaString(intent.game_path), "") != 0) {
         state.game_path = ElisaString(intent.game_path);
     }
@@ -88,7 +91,8 @@ std::optional<ParseResult> TryParseWithElisa(int argc, char* argv[]) {
         state.patch_file = ElisaString(intent.patch_file);
     }
     if (std::strcmp(ElisaString(intent.override_root), "") != 0) {
-        state.override_root = std::filesystem::path(ElisaString(intent.override_root));
+        const char* override_root = ElisaString(intent.override_root);
+        state.override_root = std::filesystem::path(override_root);
     }
     if (intent.fullscreen == LaunchIntent::ElisaFullscreenTrue) {
         state.fullscreen = "true";
