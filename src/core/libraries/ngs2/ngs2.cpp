@@ -15,12 +15,18 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+extern "C" {
+#include <libatrac9.h>
+}
 
 namespace Libraries::Ngs2 {
 
@@ -31,6 +37,9 @@ constexpr u32 DefaultMaxVoices = 64;
 constexpr u32 VoiceStateActive = 1u << 0;
 constexpr u32 MaxTrackedPorts = 16;
 constexpr u32 MaxTrackedMatrices = 16;
+constexpr u32 FloatWaveformType = 24;
+constexpr std::array<u8, 16> At9WaveGuid = {0xD2, 0x42, 0xE1, 0x47, 0xBA, 0x36, 0x8D, 0x4D,
+                                            0x88, 0xFC, 0x61, 0x65, 0x4F, 0x8C, 0x83, 0x6C};
 
 enum class OrbisNgs2VoiceParamId : u32 {
     MatrixLevels = 1,
@@ -67,6 +76,11 @@ struct VoiceRuntimeState {
     float pitchRatio = 1.0f;
     u64 decodedDataSize = 0;
     u64 decodedSamples = 0;
+    u32 decodedChannels = 0;
+    u32 decodedSampleRate = 0;
+    u64 playbackFrame = 0;
+    bool at9DecodeAttempted = false;
+    std::vector<float> decodedPcm;
 };
 
 struct RackRuntimeState {
@@ -107,6 +121,169 @@ bool IsNgs2TraceEnabled() {
         return value && std::strcmp(value, "1") == 0;
     }();
     return enabled;
+}
+
+std::string HexPrefix(const void* data, size_t size, size_t max_bytes = 96) {
+    static constexpr char HexDigits[] = "0123456789abcdef";
+    const auto* bytes = static_cast<const u8*>(data);
+    const size_t count = std::min(size, max_bytes);
+    std::string out;
+    out.reserve(count * 3);
+    for (size_t i = 0; i < count; ++i) {
+        if (i != 0) {
+            out.push_back(' ');
+        }
+        out.push_back(HexDigits[bytes[i] >> 4]);
+        out.push_back(HexDigits[bytes[i] & 0xf]);
+    }
+    return out;
+}
+
+u16 ReadLe16(const u8* data) {
+    return static_cast<u16>(data[0]) | (static_cast<u16>(data[1]) << 8);
+}
+
+u32 ReadLe32(const u8* data) {
+    return static_cast<u32>(data[0]) | (static_cast<u32>(data[1]) << 8) |
+           (static_cast<u32>(data[2]) << 16) | (static_cast<u32>(data[3]) << 24);
+}
+
+struct At9WaveInfo {
+    const u8* data = nullptr;
+    size_t dataSize = 0;
+    u32 channels = 0;
+    u32 sampleRate = 0;
+    u32 totalSamples = 0;
+    std::array<u8, ATRAC9_CONFIG_DATA_SIZE> configData{};
+};
+
+bool ParseAt9Wave(const void* raw_data, size_t raw_size, At9WaveInfo& info) {
+    const auto* data = static_cast<const u8*>(raw_data);
+    if (!data || raw_size < 12 || ReadLe32(data) != 'FFIR' || ReadLe32(data + 8) != 'EVAW') {
+        return false;
+    }
+
+    bool found_fmt = false;
+    bool found_data = false;
+    size_t offset = 12;
+    while (offset + 8 <= raw_size) {
+        const u32 tag = ReadLe32(data + offset);
+        const u32 chunk_size = ReadLe32(data + offset + 4);
+        offset += 8;
+        if (chunk_size > raw_size - offset) {
+            return false;
+        }
+
+        const auto* chunk = data + offset;
+        if (tag == ' tmf') {
+            if (chunk_size < 52 || ReadLe16(chunk) != 0xfffe) {
+                return false;
+            }
+            info.channels = ReadLe16(chunk + 2);
+            info.sampleRate = ReadLe32(chunk + 4);
+            std::array<u8, 16> guid{};
+            std::copy_n(chunk + 24, guid.size(), guid.begin());
+            if (guid != At9WaveGuid) {
+                return false;
+            }
+            std::copy_n(chunk + 44, info.configData.size(), info.configData.begin());
+            found_fmt = true;
+        } else if (tag == 'tcaf') {
+            if (chunk_size >= 4) {
+                info.totalSamples = ReadLe32(chunk);
+            }
+        } else if (tag == 'atad') {
+            info.data = chunk;
+            info.dataSize = chunk_size;
+            found_data = true;
+        }
+
+        offset += chunk_size + (chunk_size & 1);
+    }
+
+    return found_fmt && found_data && info.data && info.dataSize != 0 && info.channels != 0;
+}
+
+bool DecodeAt9WaveToFloat(const void* data, size_t size, VoiceRuntimeState& voice) {
+    At9WaveInfo wave{};
+    if (!ParseAt9Wave(data, size, wave)) {
+        return false;
+    }
+
+    void* handle = Atrac9GetHandle();
+    if (!handle) {
+        return false;
+    }
+
+    const auto release_handle = [&] {
+        Atrac9ReleaseHandle(handle);
+        handle = nullptr;
+    };
+
+    if (Atrac9InitDecoder(handle, wave.configData.data()) != 0) {
+        release_handle();
+        return false;
+    }
+
+    Atrac9CodecInfo codec_info{};
+    if (Atrac9GetCodecInfo(handle, &codec_info) != 0 || codec_info.channels <= 0 ||
+        codec_info.frameSamples <= 0) {
+        release_handle();
+        return false;
+    }
+
+    const auto channels = static_cast<u32>(codec_info.channels);
+    const auto frame_samples = static_cast<u32>(codec_info.frameSamples);
+    std::vector<float> frame(frame_samples * channels);
+    std::vector<float> decoded;
+    if (wave.totalSamples != 0) {
+        decoded.reserve(static_cast<size_t>(wave.totalSamples) * channels);
+    }
+
+    const u8* cursor = wave.data;
+    size_t remaining = wave.dataSize;
+    u32 frames_in_superframe = static_cast<u32>(std::max(codec_info.framesInSuperframe, 1));
+    u32 superframe_bytes_remain = static_cast<u32>(std::max(codec_info.superframeSize, 0));
+    u32 frame_index = 0;
+    while (remaining != 0) {
+        int bytes_used = 0;
+        const int result = Atrac9DecodeF32(handle, cursor, frame.data(), &bytes_used, false);
+        if (result != 0 || bytes_used <= 0 || static_cast<size_t>(bytes_used) > remaining) {
+            break;
+        }
+        decoded.insert(decoded.end(), frame.begin(), frame.end());
+        cursor += bytes_used;
+        remaining -= static_cast<size_t>(bytes_used);
+        superframe_bytes_remain =
+            bytes_used >= static_cast<int>(superframe_bytes_remain)
+                ? 0
+                : superframe_bytes_remain - static_cast<u32>(bytes_used);
+        ++frame_index;
+        if ((frame_index % frames_in_superframe) == 0) {
+            const size_t skip = std::min<size_t>(superframe_bytes_remain, remaining);
+            cursor += skip;
+            remaining -= skip;
+            superframe_bytes_remain = static_cast<u32>(std::max(codec_info.superframeSize, 0));
+            frame_index = 0;
+        }
+        if (wave.totalSamples != 0 && decoded.size() >= static_cast<size_t>(wave.totalSamples) * channels) {
+            decoded.resize(static_cast<size_t>(wave.totalSamples) * channels);
+            break;
+        }
+    }
+
+    release_handle();
+    if (decoded.empty()) {
+        return false;
+    }
+
+    voice.decodedPcm = std::move(decoded);
+    voice.decodedChannels = channels;
+    voice.decodedSampleRate = static_cast<u32>(codec_info.samplingRate);
+    voice.decodedSamples = voice.decodedPcm.size() / channels;
+    voice.decodedDataSize = size;
+    voice.playbackFrame = std::min<u64>(voice.playbackFrame, voice.decodedSamples);
+    return true;
 }
 
 void CopyBufferInfo(const OrbisNgs2ContextBufferInfo* src, OrbisNgs2ContextBufferInfo* dst) {
@@ -238,6 +415,77 @@ void ZeroRenderBuffers(const OrbisNgs2RenderBufferInfo* aBufferInfo, u32 numBuff
     }
 }
 
+float VoiceGain(const VoiceRuntimeState& voice) {
+    const float volume = voice.ports[0].volume;
+    if (!std::isfinite(volume)) {
+        return 0.0f;
+    }
+    return std::clamp(volume, 0.0f, 4.0f);
+}
+
+void MixVoiceToBuffer(VoiceRuntimeState& voice, const OrbisNgs2RenderBufferInfo& buffer,
+                      u64 start_frame, u64& max_frames_mixed) {
+    if (!buffer.buffer || buffer.waveformType != FloatWaveformType || buffer.numChannels == 0 ||
+        voice.decodedPcm.empty() || voice.decodedChannels == 0 || start_frame >= voice.decodedSamples) {
+        return;
+    }
+
+    const size_t output_channels = buffer.numChannels;
+    const size_t output_frames = buffer.bufferSize / (sizeof(float) * output_channels);
+    if (output_frames == 0) {
+        return;
+    }
+
+    const auto input_channels = static_cast<size_t>(voice.decodedChannels);
+    const size_t available_frames =
+        static_cast<size_t>(std::min<u64>(voice.decodedSamples - start_frame, output_frames));
+    const float gain = VoiceGain(voice);
+    auto* output = static_cast<float*>(buffer.buffer);
+    const auto* input = voice.decodedPcm.data() + start_frame * input_channels;
+
+    for (size_t frame = 0; frame < available_frames; ++frame) {
+        for (size_t channel = 0; channel < output_channels; ++channel) {
+            const size_t src_channel = input_channels == 1 ? 0 : std::min(channel, input_channels - 1);
+            const float sample = input[frame * input_channels + src_channel] * gain;
+            auto& dst = output[frame * output_channels + channel];
+            dst = std::clamp(dst + sample, -1.0f, 1.0f);
+        }
+    }
+
+    max_frames_mixed = std::max<u64>(max_frames_mixed, available_frames);
+}
+
+void MixDecodedVoicesLocked(SystemRuntimeState& system, const OrbisNgs2RenderBufferInfo* aBufferInfo,
+                            u32 numBufferInfo) {
+    if (!aBufferInfo) {
+        return;
+    }
+
+    for (const auto rackHandle : system.racks) {
+        const auto rack = g_racks.find(rackHandle);
+        if (rack == g_racks.end()) {
+            continue;
+        }
+        for (const auto voiceHandle : rack->second.voices) {
+            auto voice = g_voices.find(voiceHandle);
+            if (voice == g_voices.end() || (voice->second.stateFlags & VoiceStateActive) == 0 ||
+                voice->second.decodedPcm.empty()) {
+                continue;
+            }
+
+            const u64 start_frame = voice->second.playbackFrame;
+            u64 max_frames_mixed = 0;
+            for (u32 i = 0; i < numBufferInfo; ++i) {
+                MixVoiceToBuffer(voice->second, aBufferInfo[i], start_frame, max_frames_mixed);
+            }
+            voice->second.playbackFrame += max_frames_mixed;
+            if (voice->second.playbackFrame >= voice->second.decodedSamples) {
+                voice->second.stateFlags &= ~VoiceStateActive;
+            }
+        }
+    }
+}
+
 void TraceRenderBuffers(const OrbisNgs2RenderBufferInfo* aBufferInfo, u32 numBufferInfo) {
     if (!IsNgs2TraceEnabled() || !aBufferInfo) {
         return;
@@ -268,6 +516,17 @@ void TraceVoiceParams(OrbisNgs2Handle voiceHandle, const OrbisNgs2VoiceParamHead
             LOG_INFO(Lib_Ngs2, "voice {} param[{}]: id={:#x} size={} next={} port={} volume={}",
                      voiceHandle, index, param->id, param->size, param->next, volume->port,
                      volume->level);
+        } else if (param->size >= sizeof(OrbisNgs2CustomSamplerVoiceSetupParam) &&
+                   param->id == static_cast<u32>(OrbisNgs2CustomSamplerParamId::Setup)) {
+            const auto* setup = reinterpret_cast<const OrbisNgs2CustomSamplerVoiceSetupParam*>(param);
+            LOG_INFO(Lib_Ngs2,
+                     "voice {} param[{}]: id={:#x} size={} next={} waveformType={} "
+                     "numChannels={} sampleRate={} configData={:#x} frameOffset={} "
+                     "frameMargin={} flags={:#x}",
+                     voiceHandle, index, param->id, param->size, param->next,
+                     setup->format.waveformType, setup->format.numChannels, setup->format.sampleRate,
+                     setup->format.configData, setup->format.frameOffset, setup->format.frameMargin,
+                     setup->flags);
         } else if (param->size >= sizeof(OrbisNgs2CustomSamplerVoiceWaveformBlocksParam) &&
                    param->id ==
                        static_cast<u32>(OrbisNgs2CustomSamplerParamId::WaveformBlocks)) {
@@ -288,6 +547,11 @@ void TraceVoiceParams(OrbisNgs2Handle voiceHandle, const OrbisNgs2VoiceParamHead
                              voiceHandle, block_index, block.dataOffset, block.dataSize,
                              block.numRepeats, block.numSkipSamples, block.numSamples,
                              block.userData);
+                    if (blocks->data && block.dataSize != 0) {
+                        const auto* block_data = static_cast<const u8*>(blocks->data) + block.dataOffset;
+                        LOG_INFO(Lib_Ngs2, "voice {} waveform block[{}] bytes: {}", voiceHandle,
+                                 block_index, HexPrefix(block_data, block.dataSize));
+                    }
                 }
             }
         } else if (param->size >= sizeof(OrbisNgs2CustomSamplerVoicePitchParam) &&
@@ -338,6 +602,9 @@ void ApplyVoiceParam(VoiceRuntimeState& voice, const OrbisNgs2VoiceParamHeader* 
         }
         const auto* event = reinterpret_cast<const OrbisNgs2VoiceEventParam*>(param);
         if (event->eventId == 0) {
+            if ((voice.stateFlags & VoiceStateActive) == 0) {
+                voice.playbackFrame = std::min<u64>(voice.waveformFrameOffset, voice.decodedSamples);
+            }
             voice.stateFlags |= VoiceStateActive;
         } else if (event->eventId == 1) {
             voice.stateFlags &= ~VoiceStateActive;
@@ -382,15 +649,36 @@ void ApplyVoiceParam(VoiceRuntimeState& voice, const OrbisNgs2VoiceParamHeader* 
                 reinterpret_cast<const OrbisNgs2CustomSamplerVoiceWaveformBlocksParam*>(param);
             voice.waveformData = blocks->data;
             voice.waveformBlocks.clear();
+            voice.decodedPcm.clear();
+            voice.decodedChannels = 0;
+            voice.decodedSampleRate = 0;
+            voice.decodedDataSize = 0;
+            voice.decodedSamples = 0;
+            voice.playbackFrame = 0;
+            voice.at9DecodeAttempted = false;
             if (blocks->aBlock && blocks->numBlocks != 0) {
                 const auto count =
                     std::min<u32>(blocks->numBlocks, ORBIS_NGS2_WAVEFORM_INFO_MAX_BLOCKS);
                 voice.waveformBlocks.assign(blocks->aBlock, blocks->aBlock + count);
-                voice.decodedDataSize = 0;
-                voice.decodedSamples = 0;
                 for (const auto& block : voice.waveformBlocks) {
                     voice.decodedDataSize += block.dataSize;
                     voice.decodedSamples += block.numSamples;
+                }
+                if (blocks->data && count == 1) {
+                    const auto& block = voice.waveformBlocks.front();
+                    const auto* block_data = static_cast<const u8*>(blocks->data) + block.dataOffset;
+                    voice.at9DecodeAttempted = true;
+                    if (DecodeAt9WaveToFloat(block_data, block.dataSize, voice)) {
+                        if (IsNgs2TraceEnabled()) {
+                        LOG_INFO(Lib_Ngs2,
+                                 "decoded AT9 waveform for voice {}: channels={} sampleRate={} "
+                                 "samples={} bytes={}",
+                                 voice.handle, voice.decodedChannels, voice.decodedSampleRate,
+                                 voice.decodedSamples, voice.decodedDataSize);
+                        }
+                    } else if (IsNgs2TraceEnabled()) {
+                        LOG_INFO(Lib_Ngs2, "AT9 waveform decode skipped for voice {}", voice.handle);
+                    }
                 }
             }
             break;
@@ -412,6 +700,9 @@ void ApplyVoiceParam(VoiceRuntimeState& voice, const OrbisNgs2VoiceParamHeader* 
             const auto* frame =
                 reinterpret_cast<const OrbisNgs2CustomSamplerVoiceWaveformFrameOffsetParam*>(param);
             voice.waveformFrameOffset = frame->frameOffset;
+            if ((voice.stateFlags & VoiceStateActive) == 0) {
+                voice.playbackFrame = frame->frameOffset;
+            }
             break;
         }
         case OrbisNgs2CustomSamplerParamId::ExitLoop:
@@ -915,6 +1206,7 @@ s32 PS4_SYSV_ABI sceNgs2SystemRender(OrbisNgs2Handle systemHandle,
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    ZeroRenderBuffers(aBufferInfo, numBufferInfo);
     {
         std::scoped_lock lock{g_state_mutex};
         auto system = g_systems.find(systemHandle);
@@ -927,8 +1219,8 @@ s32 PS4_SYSV_ABI sceNgs2SystemRender(OrbisNgs2Handle systemHandle,
                 ++rack->second.renderCount;
             }
         }
+        MixDecodedVoicesLocked(system->second, aBufferInfo, numBufferInfo);
     }
-    ZeroRenderBuffers(aBufferInfo, numBufferInfo);
     TraceRenderBuffers(aBufferInfo, numBufferInfo);
     return ORBIS_OK;
 }
