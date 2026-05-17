@@ -139,19 +139,31 @@ extern "C" intptr_t shadps4_elisa_pipeline_set_config_mode(int64_t mode) {
     return 0;
 }
 
-extern "C" intptr_t shadps4_elisa_pipeline_resolve_and_run(uint8_t* executable_name,
-                                                           intptr_t wait_for_debugger,
-                                                           uint8_t* game_path, int64_t argc,
-                                                           uint8_t** argv,
-                                                           int64_t game_arg_start_index,
-                                                           int64_t game_arg_count,
-                                                           uint8_t* override_root) {
+extern "C" uint8_t* shadps4_elisa_pipeline_resolve_game_path(uint8_t* game_path) {
+    thread_local std::string resolved_path;
+    resolved_path.clear();
+
+    const auto eboot_path = LaunchPipeline::ResolveGamePathOrId(ElisaString(game_path));
+    if (eboot_path) {
+        resolved_path = eboot_path->string();
+    }
+
+    return reinterpret_cast<uint8_t*>(resolved_path.data());
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_run_emulator(uint8_t* executable_name,
+                                                         intptr_t wait_for_debugger,
+                                                         uint8_t* resolved_game_path,
+                                                         int64_t argc, uint8_t** argv,
+                                                         int64_t game_arg_start_index,
+                                                         int64_t game_arg_count,
+                                                         uint8_t* override_root) {
     if (argc < 0 || game_arg_count < 0) {
         return 1;
     }
 
-    const auto eboot_path = LaunchPipeline::ResolveGamePathOrId(ElisaString(game_path));
-    if (!eboot_path) {
+    const auto resolved = ElisaString(resolved_game_path);
+    if (std::strcmp(resolved, "") == 0) {
         return 1;
     }
 
@@ -169,7 +181,7 @@ extern "C" intptr_t shadps4_elisa_pipeline_resolve_and_run(uint8_t* executable_n
         override_path = std::filesystem::path(ElisaString(override_root));
     }
 
-    LaunchPipeline::RunEmulator(ElisaString(executable_name), wait_for_debugger != 0, *eboot_path,
+    LaunchPipeline::RunEmulator(ElisaString(executable_name), wait_for_debugger != 0, resolved,
                                 game_args, override_path);
     return 0;
 }

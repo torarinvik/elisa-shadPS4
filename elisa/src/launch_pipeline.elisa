@@ -5,6 +5,7 @@ permission HostLaunchPipeline:
     Settings
     UtilityCommand
     LaunchFlags
+    ResolveGame
     StartEmulator
     Run
 
@@ -19,7 +20,8 @@ extern shadps4_elisa_pipeline_set_ignore_game_patch() -> int can[LaunchNative.FF
 extern shadps4_elisa_pipeline_set_fullscreen(enabled: int) -> int can[LaunchNative.FFI, HostLaunchPipeline.LaunchFlags]
 extern shadps4_elisa_pipeline_set_show_fps() -> int can[LaunchNative.FFI, HostLaunchPipeline.LaunchFlags]
 extern shadps4_elisa_pipeline_set_config_mode(mode: i64) -> int can[LaunchNative.FFI, HostLaunchPipeline.LaunchFlags]
-extern shadps4_elisa_pipeline_resolve_and_run(executable_name: u8&, wait_for_debugger: int, game_path: u8&, argc: i64, argv: u8&&, game_arg_start_index: i64, game_arg_count: i64, override_root: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.StartEmulator]
+extern shadps4_elisa_pipeline_resolve_game_path(game_path: u8&) -> cstr can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]
+extern shadps4_elisa_pipeline_run_emulator(executable_name: u8&, wait_for_debugger: int, resolved_game_path: cstr, argc: i64, argv: u8&&, game_arg_start_index: i64, game_arg_count: i64, override_root: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.StartEmulator]
 
 module LaunchPipeline:
     def bool_to_int(value: int) -> int:
@@ -33,11 +35,11 @@ module LaunchPipeline:
 
     def handle_utility_command(executable_name: u8&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.UtilityCommand]:
         can LaunchNative.FFI, HostLaunchPipeline.UtilityCommand:
-            if intent.kind == SHAD_LAUNCH_KIND_BIG_PICTURE:
+            if intent.kind == SHAD::LAUNCH_KIND_BIG_PICTURE:
                 return shadps4_elisa_pipeline_big_picture(executable_name)
-            if intent.kind == SHAD_LAUNCH_KIND_ADD_GAME_FOLDER:
+            if intent.kind == SHAD::LAUNCH_KIND_ADD_GAME_FOLDER:
                 return shadps4_elisa_pipeline_add_game_folder(intent.add_game_folder)
-            if intent.kind == SHAD_LAUNCH_KIND_SET_ADDON_FOLDER:
+            if intent.kind == SHAD::LAUNCH_KIND_SET_ADDON_FOLDER:
                 return shadps4_elisa_pipeline_set_addon_folder(intent.set_addon_folder)
         return -1
 
@@ -49,28 +51,45 @@ module LaunchPipeline:
             if intent.ignore_game_patch != 0:
                 if shadps4_elisa_pipeline_set_ignore_game_patch() == 0:
                     return 0
-            if intent.fullscreen == SHAD_FULLSCREEN_TRUE:
+            if intent.fullscreen == SHAD::FULLSCREEN_TRUE:
                 if shadps4_elisa_pipeline_set_fullscreen(1) == 0:
                     return 0
-            elif intent.fullscreen == SHAD_FULLSCREEN_FALSE:
+            elif intent.fullscreen == SHAD::FULLSCREEN_FALSE:
                 if shadps4_elisa_pipeline_set_fullscreen(0) == 0:
                     return 0
-            elif intent.fullscreen == SHAD_FULLSCREEN_INVALID:
+            elif intent.fullscreen == SHAD::FULLSCREEN_INVALID:
                 return 0
             if intent.show_fps != 0:
                 if shadps4_elisa_pipeline_set_show_fps() == 0:
                     return 0
-            if intent.config_mode == SHAD_CONFIG_CLEAN:
-                if shadps4_elisa_pipeline_set_config_mode(SHAD_CONFIG_CLEAN) == 0:
+            if intent.config_mode == SHAD::CONFIG_CLEAN:
+                if shadps4_elisa_pipeline_set_config_mode(SHAD::CONFIG_CLEAN) == 0:
                     return 0
-            elif intent.config_mode == SHAD_CONFIG_GLOBAL:
-                if shadps4_elisa_pipeline_set_config_mode(SHAD_CONFIG_GLOBAL) == 0:
+            elif intent.config_mode == SHAD::CONFIG_GLOBAL:
+                if shadps4_elisa_pipeline_set_config_mode(SHAD::CONFIG_GLOBAL) == 0:
                     return 0
-            elif intent.config_mode == SHAD_CONFIG_CONFLICT:
+            elif intent.config_mode == SHAD::CONFIG_CONFLICT:
                 return 0
         return 1
 
-    def run_parsed_launch(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.StartEmulator]:
+    def resolve_game_path(intent: mutable ShadLaunchIntentCABI&) -> cstr can[LaunchNative.FFI, HostLaunchPipeline.ResolveGame]:
+        can LaunchNative.FFI, HostLaunchPipeline.ResolveGame:
+            return shadps4_elisa_pipeline_resolve_game_path(intent.game_path)
+
+    def run_emulator(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&, resolved_game_path: cstr) -> int can[LaunchNative.FFI, HostLaunchPipeline.StartEmulator]:
+        can LaunchNative.FFI, HostLaunchPipeline.StartEmulator:
+            return shadps4_elisa_pipeline_run_emulator(
+                executable_name,
+                LaunchPipeline::bool_to_int(intent.wait_for_debugger),
+                resolved_game_path,
+                argc,
+                argv,
+                intent.game_arg_start_index,
+                intent.game_arg_count,
+                intent.override_root
+            )
+
+    def run_parsed_launch(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator]:
         can LaunchNative.FFI, HostLaunchPipeline.WaitForPid:
             _ = LaunchPipeline::run_wait_for_pid(intent)
 
@@ -80,7 +99,7 @@ module LaunchPipeline:
             if shadps4_elisa_pipeline_initialize_runtime_settings() == 0:
                 return 1
 
-        if intent.kind == SHAD_LAUNCH_KIND_BIG_PICTURE or intent.kind == SHAD_LAUNCH_KIND_ADD_GAME_FOLDER or intent.kind == SHAD_LAUNCH_KIND_SET_ADDON_FOLDER:
+        if intent.kind == SHAD::LAUNCH_KIND_BIG_PICTURE or intent.kind == SHAD::LAUNCH_KIND_ADD_GAME_FOLDER or intent.kind == SHAD::LAUNCH_KIND_SET_ADDON_FOLDER:
             can LaunchNative.FFI, HostLaunchPipeline.UtilityCommand:
                 utility_result: int = LaunchPipeline::handle_utility_command(executable_name, intent)
                 return 0 if utility_result != 0 else 1
@@ -89,14 +108,11 @@ module LaunchPipeline:
             if LaunchPipeline::apply_launch_flags(intent) == 0:
                 return 1
 
+        resolved_game_path: mutable cstr = ""
+        can LaunchNative.FFI, HostLaunchPipeline.ResolveGame:
+            resolved_game_path <- LaunchPipeline::resolve_game_path(intent)
+        if shad_launch_streq(resolved_game_path, ""):
+            return 1
+
         can LaunchNative.FFI, HostLaunchPipeline.StartEmulator:
-            return shadps4_elisa_pipeline_resolve_and_run(
-                executable_name,
-                LaunchPipeline::bool_to_int(intent.wait_for_debugger),
-                intent.game_path,
-                argc,
-                argv,
-                intent.game_arg_start_index,
-                intent.game_arg_count,
-                intent.override_root
-            )
+            return LaunchPipeline::run_emulator(executable_name, argc, argv, intent, resolved_game_path)
