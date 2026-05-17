@@ -222,33 +222,69 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
-    std::vector<VirtualMemoryArea> vmas_to_write;
-    auto current_vma = FindVMA(virtual_addr);
-    while (current_vma->second.Overlaps(virtual_addr, size)) {
-        if (!HasPhysicalBacking(current_vma->second)) {
-            break;
-        }
-        vmas_to_write.emplace_back(current_vma->second);
-        current_vma++;
+    if (size == 0) {
+        return true;
     }
-
-    if (vmas_to_write.empty()) {
+    if (!IsValidMapping(virtual_addr, size)) {
         return false;
     }
 
-    for (auto& vma : vmas_to_write) {
-        auto start_in_vma = std::max<VAddr>(virtual_addr, vma.base) - vma.base;
-        auto phys_handle = std::prev(vma.phys_areas.upper_bound(start_in_vma));
-        for (; phys_handle != vma.phys_areas.end(); phys_handle++) {
-            if (!size) {
-                break;
+    const auto* src = static_cast<const u8*>(data);
+    VAddr cursor = virtual_addr;
+    u64 remaining = size;
+
+    while (remaining != 0) {
+        auto vma_handle = FindVMA(cursor);
+        if (vma_handle == vma_map.end() || !vma_handle->second.Contains(cursor, 1)) {
+            return false;
+        }
+
+        const auto& vma = vma_handle->second;
+        if (!HasPhysicalBacking(vma)) {
+            return false;
+        }
+
+        const u64 offset_in_vma = cursor - vma.base;
+        u64 vma_remaining = std::min<u64>(remaining, vma.size - offset_in_vma);
+        u64 phys_cursor = offset_in_vma;
+
+        auto phys_handle = vma.phys_areas.upper_bound(phys_cursor);
+        if (phys_handle == vma.phys_areas.begin()) {
+            return false;
+        }
+        --phys_handle;
+
+        while (vma_remaining != 0) {
+            if (phys_handle == vma.phys_areas.end()) {
+                return false;
             }
-            const u64 start_in_dma =
-                std::max<u64>(start_in_vma, phys_handle->first) - phys_handle->first;
+            if (phys_cursor < phys_handle->first) {
+                return false;
+            }
+
+            const u64 start_in_dma = phys_cursor - phys_handle->first;
+            if (start_in_dma >= phys_handle->second.size) {
+                ++phys_handle;
+                continue;
+            }
+
+            const u64 copy_size =
+                std::min<u64>(vma_remaining, phys_handle->second.size - start_in_dma);
             u8* backing = impl.BackingBase() + phys_handle->second.base + start_in_dma;
-            u64 copy_size = std::min<u64>(size, phys_handle->second.size - start_in_dma);
-            memcpy(backing, data, copy_size);
-            size -= copy_size;
+            std::memcpy(backing, src, copy_size);
+
+            src += copy_size;
+            cursor += copy_size;
+            remaining -= copy_size;
+            vma_remaining -= copy_size;
+            phys_cursor += copy_size;
+
+            if (vma_remaining != 0) {
+                ++phys_handle;
+                if (phys_handle == vma.phys_areas.end() || phys_handle->first != phys_cursor) {
+                    return false;
+                }
+            }
         }
     }
 

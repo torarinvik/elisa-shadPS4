@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -113,11 +114,22 @@ struct VirtualMemoryArea {
     bool disallow_merge = false;
 
     bool Contains(VAddr addr, u64 size) const {
-        return addr >= base && (addr + size) <= (base + this->size);
+        if (addr < base) {
+            return false;
+        }
+        const u64 offset = addr - base;
+        return offset <= this->size && size <= this->size - offset;
     }
 
     bool Overlaps(VAddr addr, u64 size) const {
-        return addr < (base + this->size) && (addr + size) > base;
+        if (size == 0 || this->size == 0) {
+            return false;
+        }
+        const auto saturating_end = [](VAddr begin, u64 range_size) {
+            constexpr VAddr Max = std::numeric_limits<VAddr>::max();
+            return range_size > Max - begin ? Max : begin + range_size;
+        };
+        return addr < saturating_end(base, this->size) && base < saturating_end(addr, size);
     }
 
     bool IsFree() const noexcept {
@@ -192,7 +204,7 @@ public:
     bool IsValidGpuMapping(VAddr virtual_addr, u64 size) {
         // The PS4's GPU can only handle 40 bit addresses.
         const VAddr max_gpu_address{0x10000000000};
-        return virtual_addr + size < max_gpu_address;
+        return virtual_addr < max_gpu_address && size <= max_gpu_address - virtual_addr;
     }
 
     bool IsValidMapping(const VAddr virtual_addr, const u64 size = 0) {
