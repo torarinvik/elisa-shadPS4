@@ -155,6 +155,7 @@ const std::map<std::string, u32> string_to_hotkey_map = {
     {"hotkey_fullscreen", HOTKEY_FULLSCREEN},
     {"hotkey_show_fps", HOTKEY_SIMPLE_FPS},
     {"hotkey_quit", HOTKEY_QUIT},
+    {"hotkey_quit_fast", HOTKEY_QUIT},
     {"hotkey_reload_inputs", HOTKEY_RELOAD_INPUTS},
     {"hotkey_toggle_mouse_to_joystick", HOTKEY_TOGGLE_MOUSE_TO_JOYSTICK},
     {"hotkey_toggle_mouse_to_gyro", HOTKEY_TOGGLE_MOUSE_TO_GYRO},

@@ -180,6 +180,7 @@ std::filesystem::path GetInputConfigFile(const std::string& game_id) {
             {"hotkey_add_virtual_user", "f5"},
             {"hotkey_remove_virtual_user", "f4"},
             {"hotkey_toggle_mouse_to_touchpad", "delete"},
+            {"hotkey_quit_fast", "f1"},
             {"hotkey_quit", "lctrl, lshift, end"},
             {"hotkey_volume_up", "kpplus"},
             {"hotkey_volume_down", "kpminus"},

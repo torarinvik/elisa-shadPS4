@@ -48,7 +48,8 @@ These come from the default global input config.
 | Add virtual user | `F5` |
 | Remove virtual user | `F4` |
 | Open emulator settings | `F3` |
-| Quit hotkey | `Left Ctrl` + `Left Shift` + `End` |
+| Quick quit | `F1` |
+| Chorded quit | `Left Ctrl` + `Left Shift` + `End` |
 | Volume up | numpad `+` |
 | Volume down | numpad `-` |
 
