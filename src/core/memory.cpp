@@ -619,9 +619,9 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
         }
     }
 
-    if (True(effective_flags & MemoryMapFlags::Fixed) &&
-        True(effective_flags & MemoryMapFlags::NoOverwrite)) {
-        // Perform necessary error checking for Fixed & NoOverwrite case
+    if (True(effective_flags & MemoryMapFlags::Fixed)) {
+        // Perform necessary error checking for fixed mappings before CreateArea can assert on
+        // host-only gaps such as macOS' Rosetta/Metal reserved address hole.
         if (!IsValidMapping(virtual_addr, size)) {
             if (IsAppleGpuReservedOverlap(virtual_addr, size) && IsAppleFixedRelocationEnabled()) {
                 alignment = alignment > 0 ? alignment : 16_KB;
@@ -639,11 +639,13 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
                             "{:#x} to {:#x}, size={:#x}, name='{}'",
                             requested_addr, virtual_addr, size, name);
             } else {
-            LogInvalidFixedMapping(virtual_addr, size, "fixed");
-            return ORBIS_KERNEL_ERROR_ENOMEM;
+                LogInvalidFixedMapping(virtual_addr, size, "fixed");
+                return ORBIS_KERNEL_ERROR_ENOMEM;
             }
         }
-        if (True(effective_flags & MemoryMapFlags::Fixed)) {
+
+        if (True(effective_flags & MemoryMapFlags::Fixed) &&
+            True(effective_flags & MemoryMapFlags::NoOverwrite)) {
             auto vma = FindVMA(virtual_addr)->second;
             auto remaining_size = vma.base + vma.size - virtual_addr;
             if (!vma.IsFree() || remaining_size < size) {

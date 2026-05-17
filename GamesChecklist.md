@@ -5,7 +5,7 @@
 | Acquired | Game | Title ID | Details |
 |---|---|---|---|
 | [x] | EA Sports UFC | CUSA00264 | Tested. Runs, then hits the known render black-screen bug. Strict watchdog shows the black frame starts upstream of final presentation; next step is VideoOut compute input tracing for shader `0xc455a5aa2c447041`. |
-| [x] | DRIVECLUB | CUSA00003 | Extracted and present; not tested. |
+| [x] | DRIVECLUB | CUSA00003 | Tested. Initially crashed when a fixed direct-memory map into the PRT/macOS GPU-reserved hole at `0x1000000000` fell through to `CarveVMA`; fixed by applying Apple fixed-mapping relocation to all fixed mappings, not only `Fixed|NoOverwrite`. Retest survived until 75s timeout with playtime around 1:12. Current issues: repeated `videoPlayer` audio invalid-port errors, stubbed `sceHttpWaitRequest`, and Facebook dialog status spam; needs manual visual assessment. |
 | [x] | Need for Speed Rivals | CUSA00168 | Extracted and present; not tested. |
 | [x] | The Amazing Spider-Man 2 | CUSA00394 | Extracted and present; not tested. |
 | [x] | Tearaway Unfolded | CUSA00562 | Extracted and present; not tested. |
