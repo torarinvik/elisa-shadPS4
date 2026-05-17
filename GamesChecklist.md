@@ -37,6 +37,13 @@
 | [x] | Redout 2 | CUSA31411 | Retested after the guest-buffer `preadv` fix. The old UE4 `Corrupt pak index detected` blocker is gone: pak footer/index/content reads from `/app0/redout2/content/paks/pakchunk0-ps4.pak` now return full byte counts. It now progresses into later UE4 content loading and crashes in a TaskGraph worker with `Unhandled access violation ... Read from address 0xfc03d4f0a4b19271`. Same next bucket as Stray/SpongeBob: post-pak UE4 asset/runtime handling. |
 | [x] | Gigantosaurus: Dino Sports | CUSA43402 | Tested. Appears to work/playable during manual play, with occasional flicker. No GPU wait timeout, crash, or strict black-screen abort occurred. Watchdog first saw a very dark but nonblack frame (`avg_luma` around 7, `near_black` around 96%, nonblack pixels present), then later bright nonblack frames while Unity-style assets loaded and shaders compiled. Log is noisy with repeated `Unexpected metadata read by a shader (texture)` warnings, but they do not currently block gameplay. |
 | [x] | The Smurfs 2: The Prisoner of the Green Stone | CUSA43623 | Retested after the guest-buffer `preadv` fix. The old UE4 `Corrupt pak index detected` blocker is gone: pak footer/index/content reads from `/app0/sm2/content/paks/sm2-ps4.pak` now return full byte counts. It now progresses into later UE4 content loading, logs `MallocBinned2 Corruption Canary was 0x3941, should be 0x17ea`, then crashes with `Unhandled access violation ... Write to address 0x0`. This points at post-pak UE4 memory/asset-runtime corruption rather than pak index I/O. |
+| [x] | Rise of the Tomb Raider | CUSA05716 | Extracted and present; not tested. |
+| [x] | Crash Bandicoot N. Sane Trilogy | CUSA07399 | Extracted and present; not tested. |
+| [x] | YAKUZA 6: The Song of Life | CUSA09660 | Extracted and present; not tested. |
+| [x] | YAKUZA KIWAMI 2 | CUSA10634 | Extracted and present; not tested. |
+| [x] | The Outer Worlds | CUSA13689 | Extracted and present; not tested. |
+| [x] | RESIDENT EVIL 3 | CUSA14123 | Extracted and present; not tested. |
+| [x] | Crysis 2 Remastered | CUSA18672 | Extracted and present; not tested. |
 | [ ] | Another Sight | CUSA15308 | Tested, then removed from folder. Blocked by fixed mapping around `0x4000000000`, which overlaps the macOS x86_64-on-Apple-Silicon reserved address hole. |
 | [ ] | Minecraft Dungeons | CUSA18797 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
 | [ ] | Taxi Chaos | CUSA20527 | Tested, then removed from folder. Blocked by the same fixed `0x4000000000` mapping issue. |
@@ -172,14 +179,14 @@ Sorted by approximate PS4 storage size, largest to smallest. Sizes are rough and
 | [ ] | 14 | WORLD OF FINAL FANTASY |
 | [ ] | 14 | Biomutant |
 | [ ] | 13 | YAKUZA 6: The Song of Life |
-| [ ] | 13 | YAKUZA KIWAMI 2 |
-| [ ] | 13 | Tony Hawk's™ Pro Skater™ 3 + 4 |
-| [ ] | 13 | Tony Hawk's™ Pro Skater™ 1 + 2 |
+| [ X] | 13 | YAKUZA KIWAMI 2 |
+| [ X] | 13 | Tony Hawk's™ Pro Skater™ 3 + 4 |
+| [ ] | 23.78 | Tony Hawk's™ Pro Skater™ 1 + 2 |
 | [X ] | 12 | ŌKAMI HD |
-| [ ] | 12 | FINAL FANTASY XII THE ZODIAC AGE |
-| [ ] | 12 | Katamari Damacy Reroll |
-| [ ] | 12 | Project Highrise: Architect's Edition |
-| [ ] | 12 | Resident Evil 4 |
+| [X ] | 12 | FINAL FANTASY XII THE ZODIAC AGE |
+| [ X] | 12 | Katamari Damacy Reroll |
+| [ ] | 37.5 | Project Highrise: Architect's Edition |
+| [ X] | 12 | Resident Evil 4 |
 | [X ] | 11 | The Witch and the Hundred Knight: Revival Edition |
 | [ X] | 10 | SEGA Genesis Classics |
 | [X ] | 10 | Hasbro Family Fun Pack |
