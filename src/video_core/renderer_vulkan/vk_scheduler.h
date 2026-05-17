@@ -63,13 +63,19 @@ struct SubmitInfo {
     u32 num_signal_semas;
 
     void AddWait(vk::Semaphore semaphore, u64 tick = 1) {
-        ASSERT(num_wait_semas < wait_semas.size());
+        if (num_wait_semas >= wait_semas.size()) {
+            ASSERT_MSG(false, "Too many Vulkan wait semaphores in submit info");
+            return;
+        }
         wait_semas[num_wait_semas] = semaphore;
         wait_ticks[num_wait_semas++] = tick;
     }
 
     void AddSignal(vk::Semaphore semaphore, u64 tick = 1) {
-        ASSERT(num_signal_semas < signal_semas.size());
+        if (num_signal_semas >= signal_semas.size()) {
+            ASSERT_MSG(false, "Too many Vulkan signal semaphores in submit info");
+            return;
+        }
         signal_semas[num_signal_semas] = semaphore;
         signal_ticks[num_signal_semas++] = tick;
     }
@@ -431,7 +437,7 @@ public:
 private:
     void AllocateWorkerCommandBuffers();
 
-    void SubmitExecution(SubmitInfo& info);
+    u64 SubmitExecution(SubmitInfo& info);
 
     void PriorityPendingOpsThread(std::stop_token stoken);
 

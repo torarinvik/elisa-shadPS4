@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <algorithm>
 #include <memory>
 
 #include "core/libraries/videoout/buffer.h"
@@ -100,12 +101,18 @@ public:
 
     VideoCore::Image& RegisterVideoOutSurface(
         const Libraries::VideoOut::BufferAttributeGroup& attribute, VAddr cpu_address) {
-        vo_buffers_addr.emplace_back(cpu_address);
+        if (!std::ranges::contains(vo_buffers_addr, cpu_address)) {
+            vo_buffers_addr.emplace_back(cpu_address);
+        }
         auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
         const auto image_id = texture_cache.FindImage(desc);
         auto& image = texture_cache.GetImage(image_id);
         image.usage.vo_surface = 1u;
         return image;
+    }
+
+    void UnregisterVideoOutSurface(VAddr cpu_address) {
+        std::erase(vo_buffers_addr, cpu_address);
     }
 
     bool IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const;

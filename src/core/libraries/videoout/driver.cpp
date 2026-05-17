@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <vector>
+
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -25,6 +27,20 @@ constexpr static bool Is32BppPixelFormat(PixelFormat format) {
     case PixelFormat::A2R10G10B10:
     case PixelFormat::A2R10G10B10Srgb:
     case PixelFormat::A2R10G10B10Bt2020Pq:
+        return true;
+    default:
+        return false;
+    }
+}
+
+constexpr static bool IsSupportedPixelFormat(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::A8R8G8B8Srgb:
+    case PixelFormat::A8B8G8R8Srgb:
+    case PixelFormat::A2R10G10B10:
+    case PixelFormat::A2R10G10B10Srgb:
+    case PixelFormat::A2R10G10B10Bt2020Pq:
+    case PixelFormat::A16R16G16B16Float:
         return true;
     default:
         return false;
@@ -62,6 +78,14 @@ int VideoOutDriver::Open(const ServiceThreadParams* params) {
 void VideoOutDriver::Close(s32 handle) {
     std::scoped_lock lock{mutex};
 
+    if (presenter) {
+        for (const auto& buffer : main_port.buffer_slots) {
+            if (buffer.group_index != -1) {
+                presenter->UnregisterVideoOutSurface(buffer.address_left);
+            }
+        }
+    }
+
     // Mark as closed
     main_port.is_open = false;
     main_port.flip_rate = 0;
@@ -93,24 +117,29 @@ VideoOutPort* VideoOutDriver::GetPort(int handle) {
 
 int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* const* addresses,
                                     s32 bufferNum, const BufferAttribute* attribute) {
+    if (port == nullptr || attribute == nullptr || addresses == nullptr || startIndex < 0 ||
+        bufferNum <= 0 || startIndex >= MaxDisplayBuffers || bufferNum > MaxDisplayBuffers ||
+        startIndex > MaxDisplayBuffers - bufferNum) {
+        LOG_ERROR(Lib_VideoOut, "Invalid register buffers request startIndex={}, bufferNum={}",
+                  startIndex, bufferNum);
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
+
     const s32 group_index = port->FindFreeGroup();
     if (group_index >= MaxDisplayBufferGroups) {
         return ORBIS_VIDEO_OUT_ERROR_NO_EMPTY_SLOT;
     }
 
-    if (startIndex + bufferNum > MaxDisplayBuffers || startIndex > MaxDisplayBuffers ||
-        bufferNum > MaxDisplayBuffers) {
-        LOG_ERROR(Lib_VideoOut,
-                  "Attempted to register too many buffers startIndex = {}, bufferNum = {}",
-                  startIndex, bufferNum);
-        return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
-    }
-
     const s32 end_index = startIndex + bufferNum;
-    if (bufferNum > 0 &&
-        std::any_of(port->buffer_slots.begin() + startIndex, port->buffer_slots.begin() + end_index,
+    if (std::any_of(port->buffer_slots.begin() + startIndex, port->buffer_slots.begin() + end_index,
                     [](auto& buffer) { return buffer.group_index != -1; })) {
         return ORBIS_VIDEO_OUT_ERROR_SLOT_OCCUPIED;
+    }
+
+    if (!IsSupportedPixelFormat(attribute->pixel_format)) {
+        LOG_ERROR(Lib_VideoOut, "Invalid pixel format = {:#x}",
+                  static_cast<u32>(attribute->pixel_format));
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_PIXEL_FORMAT;
     }
 
     if (attribute->reserved0 != 0 || attribute->reserved1 != 0) {
@@ -130,6 +159,12 @@ int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* co
         LOG_ERROR(Lib_VideoOut, "Invalid tilingMode = {}",
                   static_cast<u32>(attribute->tiling_mode));
         return ORBIS_VIDEO_OUT_ERROR_INVALID_TILING_MODE;
+    }
+    for (u32 i = 0; i < bufferNum; i++) {
+        if (addresses[i] == nullptr) {
+            LOG_ERROR(Lib_VideoOut, "Invalid null buffer address at index {}", i + startIndex);
+            return ORBIS_VIDEO_OUT_ERROR_INVALID_ADDRESS;
+        }
     }
 
     LOG_INFO(Lib_VideoOut,
@@ -163,7 +198,8 @@ int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* co
 }
 
 int VideoOutDriver::UnregisterBuffers(VideoOutPort* port, s32 attributeIndex) {
-    if (attributeIndex >= MaxDisplayBufferGroups || !port->groups[attributeIndex].is_occupied) {
+    if (port == nullptr || attributeIndex < 0 || attributeIndex >= MaxDisplayBufferGroups ||
+        !port->groups[attributeIndex].is_occupied) {
         LOG_ERROR(Lib_VideoOut, "Invalid attribute index {}", attributeIndex);
         return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
     }
@@ -175,6 +211,9 @@ int VideoOutDriver::UnregisterBuffers(VideoOutPort* port, s32 attributeIndex) {
         if (buffer.group_index != attributeIndex) {
             continue;
         }
+        if (presenter) {
+            presenter->UnregisterVideoOutSurface(buffer.address_left);
+        }
         buffer.group_index = -1;
     }
 
@@ -183,9 +222,16 @@ int VideoOutDriver::UnregisterBuffers(VideoOutPort* port, s32 attributeIndex) {
 
 int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex,
                                           const BufferAttribute* attribute) {
-    if (attributeIndex >= MaxDisplayBufferGroups || !port->groups[attributeIndex].is_occupied) {
+    if (port == nullptr || attribute == nullptr || attributeIndex < 0 ||
+        attributeIndex >= MaxDisplayBufferGroups || !port->groups[attributeIndex].is_occupied) {
         LOG_ERROR(Lib_VideoOut, "Invalid attribute index {}", attributeIndex);
         return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
+
+    if (!IsSupportedPixelFormat(attribute->pixel_format)) {
+        LOG_ERROR(Lib_VideoOut, "Invalid pixel format = {:#x}",
+                  static_cast<u32>(attribute->pixel_format));
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_PIXEL_FORMAT;
     }
 
     if (attribute->reserved0 != 0 || attribute->reserved1 != 0) {
@@ -214,8 +260,22 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
              static_cast<u32>(attribute->tiling_mode), attribute->width, attribute->height,
              attribute->pitch_in_pixel, attribute->option);
 
-    std::unique_lock lock{port->port_mutex};
-    std::memcpy(&port->groups[attributeIndex].attrib, attribute, sizeof(BufferAttribute));
+    std::vector<uintptr_t> active_addresses;
+    {
+        std::unique_lock lock{port->port_mutex};
+        std::memcpy(&port->groups[attributeIndex].attrib, attribute, sizeof(BufferAttribute));
+        for (const auto& buffer : port->buffer_slots) {
+            if (buffer.group_index == attributeIndex) {
+                active_addresses.push_back(buffer.address_left);
+            }
+        }
+    }
+    if (presenter) {
+        const auto& group = port->groups[attributeIndex];
+        for (const auto address : active_addresses) {
+            presenter->RegisterVideoOutSurface(group, address);
+        }
+    }
     return 0;
 }
 
@@ -243,7 +303,12 @@ void VideoOutDriver::Flip(const Request& req) {
     }
 
     // Trigger flip events for the port.
-    for (auto& event : port->flip_events) {
+    std::vector<Kernel::EqueueInternal*> flip_events;
+    {
+        std::scoped_lock lock{port->port_mutex};
+        flip_events = port->flip_events;
+    }
+    for (auto& event : flip_events) {
         if (event != nullptr) {
             event->TriggerEvent(
                 static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
@@ -264,7 +329,9 @@ void VideoOutDriver::Flip(const Request& req) {
 
 void VideoOutDriver::DrawBlankFrame() {
     const auto empty_frame = presenter->PrepareBlankFrame(false);
-    presenter->Present(empty_frame);
+    if (empty_frame != nullptr) {
+        presenter->Present(empty_frame);
+    }
 }
 
 void VideoOutDriver::DrawLastFrame() {
@@ -309,6 +376,17 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         ASSERT_MSG(buffer.group_index >= 0, "Trying to flip an unregistered buffer!");
         const auto& group = port->groups[buffer.group_index];
         frame = presenter->PrepareFrame(group, buffer.address_left);
+    }
+
+    if (frame == nullptr) {
+        std::unique_lock lock{port->port_mutex};
+        if (is_eop && port->flip_status.gc_queue_num > 0) {
+            --port->flip_status.gc_queue_num;
+        }
+        if (port->flip_status.flip_pending_num > 0) {
+            --port->flip_status.flip_pending_num;
+        }
+        return;
     }
 
     std::scoped_lock lock{mutex};
@@ -368,11 +446,17 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         }
 
         {
+            std::vector<Kernel::EqueueInternal*> vblank_events;
+            {
+                std::scoped_lock lock{main_port.port_mutex};
+                vblank_events = main_port.vblank_events;
+            }
+
             // Needs lock here as can be concurrently read by `sceVideoOutGetVblankStatus`
             std::scoped_lock lock{main_port.vo_mutex};
 
             // Trigger flip events for the port
-            for (auto& event : main_port.vblank_events) {
+            for (auto& event : vblank_events) {
                 if (event != nullptr) {
                     event->TriggerEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
                                         Kernel::OrbisKernelEvent::Filter::VideoOut,

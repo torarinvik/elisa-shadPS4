@@ -851,12 +851,37 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
         return image_ids.back();
     }
     if (!image_ids.empty()) {
-        for (s32 i = 0; i < image_ids.size(); ++i) {
-            Image& image = slot_images[image_ids[i]];
-            if (image.info.guest_size == size) {
-                return image_ids[i];
+        for (const ImageId image_id : image_ids) {
+            Image& image = slot_images[image_id];
+            if (image.info.guest_address == address && image.info.guest_size == size) {
+                return image_id;
             }
         }
+        for (const ImageId image_id : image_ids) {
+            Image& image = slot_images[image_id];
+            if (image.info.guest_address == address) {
+                return image_id;
+            }
+        }
+
+        ImageId smallest_containing{};
+        u64 smallest_size = std::numeric_limits<u64>::max();
+        for (const ImageId image_id : image_ids) {
+            Image& image = slot_images[image_id];
+            if (address < image.info.guest_address) {
+                continue;
+            }
+            const u64 offset = address - image.info.guest_address;
+            if (offset <= image.info.guest_size && size <= image.info.guest_size - offset &&
+                image.info.guest_size < smallest_size) {
+                smallest_containing = image_id;
+                smallest_size = image.info.guest_size;
+            }
+        }
+        if (smallest_containing) {
+            return smallest_containing;
+        }
+
         LOG_WARNING(Render_Vulkan,
                     "Failed to find exact image match for copy addr={:#x}, size={:#x}", address,
                     size);

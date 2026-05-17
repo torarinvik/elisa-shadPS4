@@ -16,6 +16,7 @@
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -308,10 +309,13 @@ static std::pair<u32, u32> GetDrawOffsets(
     u32 vertex_offset = regs.index_offset;
     u32 instance_offset = 0;
     if (fetch_shader) {
-        if (vertex_offset == 0 && fetch_shader->vertex_offset_sgpr != -1) {
+        const auto valid_sgpr = [](s8 sgpr) {
+            return sgpr >= 0 && static_cast<size_t>(sgpr) < Shader::NUM_USER_DATA_REGS;
+        };
+        if (vertex_offset == 0 && valid_sgpr(fetch_shader->vertex_offset_sgpr)) {
             vertex_offset = info.user_data[fetch_shader->vertex_offset_sgpr];
         }
-        if (fetch_shader->instance_offset_sgpr != -1) {
+        if (valid_sgpr(fetch_shader->instance_offset_sgpr)) {
             instance_offset = info.user_data[fetch_shader->instance_offset_sgpr];
         }
     }
@@ -685,7 +689,8 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     // Image copy must be valid
     VideoCore::Image& image0 = texture_cache.GetImage(image0_id);
     VideoCore::Image& image1 = texture_cache.GetImage(image1_id);
-    if (image0.info.guest_size != image1.info.guest_size ||
+    if (image0.info.guest_address != buf0.base_address || image1.info.guest_address != buf1.base_address ||
+        image0.info.guest_size != image1.info.guest_size ||
         image0.info.pitch != image1.info.pitch || image0.info.guest_size != buf0.GetSize() ||
         image0.info.num_bits != image1.info.num_bits) {
         return false;
@@ -743,15 +748,17 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
 
     // Image clear must be valid
     VideoCore::Image& image1 = texture_cache.GetImage(image1_id);
-    if (image1.info.guest_size != buf1.GetSize() || image1.info.num_bits != buf1_bpp ||
-        image1.info.props.is_depth) {
+    if (image1.info.guest_address != buf1.base_address || image1.info.guest_size != buf1.GetSize() ||
+        image1.info.num_bits != buf1_bpp || image1.info.props.is_depth ||
+        !memory->IsValidMapping(buf0.base_address, 16)) {
         return false;
     }
 
     // Perform image clear
-    const float* values = reinterpret_cast<float*>(buf0.base_address);
+    std::array<float, 4> values{};
+    std::memcpy(values.data(), reinterpret_cast<const void*>(buf0.base_address), sizeof(values));
     const vk::ClearValue clear = {
-        .color = {.float32 = std::array<float, 4>{values[0], values[1], values[2], values[3]}},
+        .color = {.float32 = values},
     };
     const VideoCore::SubresourceRange range = {
         .base =
@@ -811,8 +818,16 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 const auto& cs_program = liverpool->GetCsRegs();
                 const auto lds_size = cs_program.SharedMemSize() * cs_program.NumWorkgroups();
                 const auto [data, offset] = lds_buffer.Map(lds_size, alignment);
-                std::memset(data, 0, lds_size);
-                buffer_infos.emplace_back(lds_buffer.Handle(), offset, lds_size);
+                if (data != nullptr) {
+                    std::memset(data, 0, lds_size);
+                    lds_buffer.Commit();
+                    buffer_infos.emplace_back(lds_buffer.Handle(), offset, lds_size);
+                } else if (instance.IsNullDescriptorSupported()) {
+                    buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
+                } else {
+                    auto& null_buffer = buffer_cache.GetBuffer(VideoCore::NULL_BUFFER_ID);
+                    buffer_infos.emplace_back(null_buffer.Handle(), 0, VK_WHOLE_SIZE);
+                }
             } else if (instance.IsNullDescriptorSupported()) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
@@ -971,7 +986,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         }
 
         const Shader::MipStorageFallbackMode mip_fallback_mode = image_desc.mip_fallback_mode;
-        const u32 num_bindings = image_desc.NumBindings(stage);
+        const u32 num_bindings = std::min<u32>(image_desc.NumBindings(stage), Shader::NUM_IMAGES);
 
         for (auto i = 0; i < num_bindings; i++) {
             auto& [image_id, desc] = image_bindings.emplace_back(
@@ -1320,9 +1335,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                        "Strict render validation: sampler associated image index out of range "
                        "associated={} images={} stage={} pgm={:#x}",
                        sampler.associated_image, stage.images.size(), stage.stage, stage.pgm_hash);
-            const auto& tsharp = stage.images[sampler.associated_image].GetSharp(stage);
-            if (tsharp.base_level == 0 && tsharp.last_level == 0) {
+            if (sampler.associated_image >= stage.images.size()) {
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
+            } else {
+                const auto& tsharp = stage.images[sampler.associated_image].GetSharp(stage);
+                if (tsharp.base_level == 0 && tsharp.last_level == 0) {
+                    ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
+                }
             }
         }
         const auto vk_sampler = texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base);

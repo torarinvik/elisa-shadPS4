@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
+#include <algorithm>
 #include "core/emulator_settings.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/system/userservice.h"
@@ -25,8 +26,12 @@ void PS4_SYSV_ABI sceVideoOutSetBufferAttribute(BufferAttribute* attribute, Pixe
     LOG_INFO(Lib_VideoOut,
              "pixelFormat = {}, tilingMode = {}, aspectRatio = {}, width = {}, height = {}, "
              "pitchInPixel = {}",
-             GetPixelFormatString(pixelFormat), tilingMode, aspectRatio, width, height,
-             pitchInPixel);
+             static_cast<u32>(pixelFormat), tilingMode, aspectRatio, width, height, pitchInPixel);
+
+    if (attribute == nullptr) {
+        LOG_ERROR(Lib_VideoOut, "Buffer attribute pointer is null");
+        return;
+    }
 
     std::memset(attribute, 0, sizeof(BufferAttribute));
     attribute->pixel_format = static_cast<PixelFormat>(pixelFormat);
@@ -61,7 +66,10 @@ s32 PS4_SYSV_ABI sceVideoOutAddFlipEvent(Kernel::OrbisKernelEqueue eq, s32 handl
     event.data = port;
     equeue->AddEvent(event);
 
-    port->flip_events.push_back(equeue);
+    {
+        std::scoped_lock lock{port->port_mutex};
+        port->flip_events.push_back(equeue);
+    }
     return ORBIS_OK;
 }
 
@@ -76,7 +84,13 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteFlipEvent(Kernel::OrbisKernelEqueue eq, s32 ha
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
     }
     equeue->RemoveEvent(handle, Kernel::OrbisKernelEvent::Filter::VideoOut);
-    port->flip_events.erase(find(port->flip_events.begin(), port->flip_events.end(), equeue));
+    {
+        std::scoped_lock lock{port->port_mutex};
+        const auto it = std::find(port->flip_events.begin(), port->flip_events.end(), equeue);
+        if (it != port->flip_events.end()) {
+            port->flip_events.erase(it);
+        }
+    }
     return ORBIS_OK;
 }
 
@@ -103,7 +117,10 @@ s32 PS4_SYSV_ABI sceVideoOutAddVblankEvent(Kernel::OrbisKernelEqueue eq, s32 han
     event.data = port;
     equeue->AddEvent(event);
 
-    port->vblank_events.push_back(equeue);
+    {
+        std::scoped_lock lock{port->port_mutex};
+        port->vblank_events.push_back(equeue);
+    }
     return ORBIS_OK;
 }
 
@@ -118,7 +135,13 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteVblankEvent(Kernel::OrbisKernelEqueue eq, s32 
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
     }
     equeue->RemoveEvent(handle, Kernel::OrbisKernelEvent::Filter::VideoOut);
-    port->vblank_events.erase(find(port->vblank_events.begin(), port->vblank_events.end(), equeue));
+    {
+        std::scoped_lock lock{port->port_mutex};
+        const auto it = std::find(port->vblank_events.begin(), port->vblank_events.end(), equeue);
+        if (it != port->vblank_events.end()) {
+            port->vblank_events.erase(it);
+        }
+    }
     return ORBIS_OK;
 }
 
@@ -140,13 +163,24 @@ s32 PS4_SYSV_ABI sceVideoOutRegisterBuffers(s32 handle, s32 startIndex, void* co
 
 s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate) {
     LOG_TRACE(Lib_VideoOut, "called");
-    driver->GetPort(handle)->flip_rate = rate;
+    auto* port = driver->GetPort(handle);
+    if (!port || !port->is_open) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
+    if (rate < 0 || rate > 60) {
+        LOG_ERROR(Lib_VideoOut, "Invalid flip rate = {}", rate);
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
+    port->flip_rate = rate;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceVideoOutIsFlipPending(s32 handle) {
     LOG_TRACE(Lib_VideoOut, "called");
     auto* port = driver->GetPort(handle);
+    if (!port || !port->is_open) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
     std::unique_lock lock{port->port_mutex};
     s32 pending = port->flip_status.flip_pending_num;
     return pending;
@@ -317,6 +351,10 @@ s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId 
 }
 
 s32 PS4_SYSV_ABI sceVideoOutClose(s32 handle) {
+    auto* port = driver->GetPort(handle);
+    if (!port || !port->is_open) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
     driver->Close(handle);
     return ORBIS_OK;
 }
@@ -344,13 +382,21 @@ s32 PS4_SYSV_ABI sceVideoOutGetBufferLabelAddress(s32 handle, uintptr_t* label_a
 
 s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk) {
     auto* port = driver->GetPort(handle);
-    if (!port) {
+    if (!port || !port->is_open) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
+    if (buf_id >= MaxDisplayBuffers || port->buffer_slots[buf_id].group_index < 0) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_INDEX;
     }
 
     Platform::IrqC::Instance()->RegisterOnce(
         Platform::InterruptId::GfxFlip, [=](Platform::InterruptId irq) {
             ASSERT_MSG(irq == Platform::InterruptId::GfxFlip, "An unexpected IRQ occured");
+            if (!port->is_open || buf_id >= MaxDisplayBuffers ||
+                port->buffer_slots[buf_id].group_index < 0) {
+                LOG_WARNING(Lib_VideoOut, "Dropping stale EOP flip for buffer {}", buf_id);
+                return;
+            }
             ASSERT_MSG(port->buffer_labels[buf_id] == 1, "Out of order flip IRQ");
             const auto result = driver->SubmitFlip(port, buf_id, flip_arg, true);
             ASSERT_MSG(result, "EOP flip submission failed");
@@ -417,6 +463,10 @@ struct Mode {
 };
 
 void PS4_SYSV_ABI sceVideoOutModeSetAny_(Mode* mode, u32 size) {
+    if (mode == nullptr || size < sizeof(Mode)) {
+        LOG_ERROR(Lib_VideoOut, "Invalid mode output pointer or size {}", size);
+        return;
+    }
     std::memset(mode, 0xff, size);
     mode->size = size;
 }
@@ -425,8 +475,11 @@ s32 PS4_SYSV_ABI sceVideoOutConfigureOutputMode_(s32 handle, u32 reserved, const
                                                  const void* options, u32 size_mode,
                                                  u32 size_options) {
     auto* port = driver->GetPort(handle);
-    if (!port) {
+    if (!port || !port->is_open) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
+    if (mode == nullptr || size_mode < sizeof(Mode)) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_ADDRESS;
     }
 
     if (reserved != 0) {

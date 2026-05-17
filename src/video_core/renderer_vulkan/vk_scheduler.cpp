@@ -103,10 +103,9 @@ void Scheduler::Flush() {
 
 void Scheduler::Finish() {
     // When finishing, we need to wait for the submission to have executed on the device.
-    const u64 presubmit_tick = CurrentTick();
     SubmitInfo info{};
-    SubmitExecution(info);
-    Wait(presubmit_tick);
+    const u64 submitted_tick = SubmitExecution(info);
+    Wait(submitted_tick);
 }
 
 void Scheduler::Wait(u64 tick) {
@@ -147,7 +146,7 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 #endif
 }
 
-void Scheduler::SubmitExecution(SubmitInfo& info) {
+u64 Scheduler::SubmitExecution(SubmitInfo& info) {
     std::scoped_lock lk{submit_mutex};
     const u64 signal_value = master_semaphore.NextTick();
 
@@ -191,13 +190,16 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
-    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    ASSERT_MSG(submit_result == vk::Result::eSuccess, "Queue submit failed: {}",
+               vk::to_string(submit_result));
 
     master_semaphore.Refresh();
     AllocateWorkerCommandBuffers();
 
     // Apply pending operations
     PopPendingOperations();
+
+    return signal_value;
 }
 
 void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {

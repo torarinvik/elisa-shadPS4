@@ -129,7 +129,7 @@ void PostProcessingPass::Create(vk::Device device, const vk::Format surface_form
         .depthClampEnable = false,
         .rasterizerDiscardEnable = false,
         .polygonMode = vk::PolygonMode::eFill,
-        .cullMode = vk::CullModeFlagBits::eBack,
+        .cullMode = vk::CullModeFlagBits::eNone,
         .frontFace = vk::FrontFace::eClockwise,
         .depthBiasEnable = false,
         .lineWidth = 1.0f,

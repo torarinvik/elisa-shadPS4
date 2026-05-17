@@ -945,9 +945,19 @@ Presenter::~Presenter() {
 
     const vk::Device device = instance.GetDevice();
     for (auto& frame : present_frames) {
-        vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
-        device.destroyImageView(frame.image_view);
-        device.destroyFence(frame.present_done);
+        if (frame.imgui_texture) {
+            ImGui::Vulkan::RemoveTexture(frame.imgui_texture);
+            frame.imgui_texture = nullptr;
+        }
+        if (frame.image_view) {
+            device.destroyImageView(frame.image_view);
+        }
+        if (frame.image) {
+            vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
+        }
+        if (frame.present_done) {
+            device.destroyFence(frame.present_done);
+        }
     }
 }
 
@@ -959,6 +969,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     const vk::Device device = instance.GetDevice();
     if (frame->imgui_texture) {
         ImGui::Vulkan::RemoveTexture(frame->imgui_texture);
+        frame->imgui_texture = nullptr;
     }
     if (frame->image_view) {
         device.destroyImageView(frame->image_view);

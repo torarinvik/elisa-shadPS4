@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <unordered_set>
@@ -275,7 +276,13 @@ private:
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {
         static constexpr bool RETURNS_BOOL = std::is_same_v<std::invoke_result<Func, u64>, bool>;
-        const u64 page_end = (addr + size - 1) >> Traits::PageBits;
+        if (size == 0) {
+            return;
+        }
+        const u64 max_addr = std::numeric_limits<u64>::max();
+        const u64 last_offset = size - 1;
+        const u64 end_addr = last_offset > max_addr - addr ? max_addr : addr + last_offset;
+        const u64 page_end = end_addr >> Traits::PageBits;
         for (u64 page = addr >> Traits::PageBits; page <= page_end; ++page) {
             if constexpr (RETURNS_BOOL) {
                 if (func(page)) {
