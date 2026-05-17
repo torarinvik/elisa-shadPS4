@@ -16,7 +16,6 @@
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "core/file_sys/fs.h"
-#include "elisa/native/shadps4_elisa_launch_intent.h"
 #include "imgui/big_picture/big_picture.h"
 
 namespace {
@@ -72,17 +71,12 @@ extern "C" intptr_t shadps4_elisa_main_help(int64_t argc, uint8_t** argv) {
     return 0;
 }
 
-extern "C" intptr_t shadps4_elisa_main_report_error(ShadLaunchIntentCABI* intent) {
-    if (intent == nullptr) {
-        return 1;
+extern "C" intptr_t shadps4_elisa_main_print_error(uint8_t* message) {
+    const char* text = ElisaString(message);
+    if (std::strcmp(text, "") != 0) {
+        std::cerr << "Error: " << text << "\n";
     }
-    const char* message = ElisaString(intent->error_message);
-    if (std::strcmp(message, "invalid argument for --fullscreen") == 0) {
-        std::cerr << "Error: Invalid argument for --fullscreen (use true|false)\n";
-    } else if (std::strcmp(message, "") != 0) {
-        std::cerr << "Error: " << message << "\n";
-    }
-    return static_cast<int>(intent->exit_code);
+    return 1;
 }
 
 extern "C" intptr_t shadps4_elisa_pipeline_set_log_append() {

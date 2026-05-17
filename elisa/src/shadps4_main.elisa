@@ -7,7 +7,15 @@ permission HostMain:
 
 extern shadps4_elisa_main_no_args(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, HostMain.NoArgs]
 extern shadps4_elisa_main_help(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, HostMain.Help]
-extern shadps4_elisa_main_report_error(intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostMain.ReportError]
+extern shadps4_elisa_main_print_error(message: u8&) -> int can[LaunchNative.FFI, HostMain.ReportError]
+
+def shadps4_elisa_report_launch_error(intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostMain.ReportError]:
+    message: mutable cstr = intent.error_message.cast[cstr]
+    if shad_launch_streq(message, "invalid argument for --fullscreen"):
+        message <- "Invalid argument for --fullscreen (use true|false)"
+    can LaunchNative.FFI, HostMain.ReportError:
+        _ = shadps4_elisa_main_print_error(message.cast[u8&])
+    return intent.exit_code
 
 def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, LaunchFS.Read, HostMain.NoArgs, HostMain.Help, HostMain.ReportError, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator]:
     intent: mutable ShadLaunchIntentFFI = zeroed
@@ -25,7 +33,7 @@ def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, 
 
     if intent.kind == SHAD::LAUNCH_KIND_ERROR:
         can LaunchNative.FFI, HostMain.ReportError:
-            return shadps4_elisa_main_report_error(intent.ref[mutable ShadLaunchIntentCABI&])
+            return shadps4_elisa_report_launch_error(intent.ref[mutable ShadLaunchIntentCABI&])
 
     can LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator:
         return LaunchPipeline::run_parsed_launch(intent.executable_name, argc, argv, intent.ref[mutable ShadLaunchIntentCABI&])
