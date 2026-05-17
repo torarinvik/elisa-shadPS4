@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,9 +14,15 @@
 #include <SDL3/SDL_messagebox.h>
 #include <core/emulator_settings.h>
 
+#include "common/config.h"
+#include "common/key_manager.h"
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
+#include "common/path_util.h"
+#include "core/emulator_state.h"
 #include "core/file_sys/fs.h"
+#include "core/ipc/ipc.h"
+#include "core/user_settings.h"
 #include "imgui/big_picture/big_picture.h"
 
 namespace {
@@ -84,8 +91,60 @@ extern "C" intptr_t shadps4_elisa_pipeline_set_log_append() {
     return 1;
 }
 
-extern "C" intptr_t shadps4_elisa_pipeline_initialize_runtime_settings() {
-    LaunchPipeline::InitializeRuntimeSettings();
+extern "C" intptr_t shadps4_elisa_pipeline_setup_boot_log() {
+    Common::Log::Setup("shad_log.txt");
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_initialize_ipc() {
+    IPC::Instance().Init();
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_initialize_emulator_state() {
+    auto emu_state = std::make_shared<EmulatorState>();
+    EmulatorState::SetInstance(emu_state);
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_load_user_settings() {
+    UserSettings.Load();
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_load_config() {
+    const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+    Config::load(user_dir / "config.toml");
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_load_keys() {
+    auto key_manager = KeyManager::GetInstance();
+    key_manager->LoadFromFile();
+    if (key_manager->GetAllKeys().TrophyKeySet.ReleaseTrophyKey.empty() &&
+        !Config::getTrophyKey().empty()) {
+        auto keys = key_manager->GetAllKeys();
+        if (keys.TrophyKeySet.ReleaseTrophyKey.empty() && !Config::getTrophyKey().empty()) {
+            keys.TrophyKeySet.ReleaseTrophyKey =
+                KeyManager::HexStringToBytes(Config::getTrophyKey());
+            key_manager->SetAllKeys(keys);
+            key_manager->SaveToFile();
+        }
+    }
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_load_emulator_settings() {
+    std::shared_ptr<EmulatorSettingsImpl> emu_settings = std::make_shared<EmulatorSettingsImpl>();
+    EmulatorSettingsImpl::SetInstance(emu_settings);
+    emu_settings->Load();
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_restart_log_from_settings() {
+    Common::Log::Shutdown();
+    Common::Log::g_should_append |= EmulatorSettings.IsLogAppend();
+    Common::Log::Setup("shad_log.txt");
     return 1;
 }
 

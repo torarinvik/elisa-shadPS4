@@ -2,7 +2,13 @@ include "launch_intent.elisa"
 
 permission HostLaunchPipeline:
     WaitForPid
-    Settings
+    BootLog
+    IPC
+    EmulatorState
+    UserSettings
+    Config
+    Keys
+    EmulatorSettings
     UtilityCommand
     LaunchFlags
     ResolveGame
@@ -10,8 +16,15 @@ permission HostLaunchPipeline:
     Run
 
 extern shadps4_elisa_wait_for_pid_exit(pid: int, poll_ms: u32, max_polls: i64) -> int can[LaunchNative.FFI, HostLaunchPipeline.WaitForPid]
-extern shadps4_elisa_pipeline_initialize_runtime_settings() -> int can[LaunchNative.FFI, HostLaunchPipeline.Settings]
-extern shadps4_elisa_pipeline_set_log_append() -> int can[LaunchNative.FFI, HostLaunchPipeline.Settings]
+extern shadps4_elisa_pipeline_setup_boot_log() -> int can[LaunchNative.FFI, HostLaunchPipeline.BootLog]
+extern shadps4_elisa_pipeline_set_log_append() -> int can[LaunchNative.FFI, HostLaunchPipeline.BootLog]
+extern shadps4_elisa_pipeline_initialize_ipc() -> int can[LaunchNative.FFI, HostLaunchPipeline.IPC]
+extern shadps4_elisa_pipeline_initialize_emulator_state() -> int can[LaunchNative.FFI, HostLaunchPipeline.EmulatorState]
+extern shadps4_elisa_pipeline_load_user_settings() -> int can[LaunchNative.FFI, HostLaunchPipeline.UserSettings]
+extern shadps4_elisa_pipeline_load_config() -> int can[LaunchNative.FFI, HostLaunchPipeline.Config]
+extern shadps4_elisa_pipeline_load_keys() -> int can[LaunchNative.FFI, HostLaunchPipeline.Keys]
+extern shadps4_elisa_pipeline_load_emulator_settings() -> int can[LaunchNative.FFI, HostLaunchPipeline.EmulatorSettings]
+extern shadps4_elisa_pipeline_restart_log_from_settings() -> int can[LaunchNative.FFI, HostLaunchPipeline.BootLog, HostLaunchPipeline.EmulatorSettings]
 extern shadps4_elisa_pipeline_big_picture(executable_name: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.UtilityCommand]
 extern shadps4_elisa_pipeline_add_game_folder(path: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.UtilityCommand]
 extern shadps4_elisa_pipeline_set_addon_folder(path: u8&) -> int can[LaunchNative.FFI, HostLaunchPipeline.UtilityCommand]
@@ -32,6 +45,35 @@ module LaunchPipeline:
             return 1
         can LaunchNative.FFI, HostLaunchPipeline.WaitForPid:
             return shadps4_elisa_wait_for_pid_exit(intent.wait_pid.int(), 500, 7200)
+
+    def initialize_runtime_settings(intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.BootLog, HostLaunchPipeline.IPC, HostLaunchPipeline.EmulatorState, HostLaunchPipeline.UserSettings, HostLaunchPipeline.Config, HostLaunchPipeline.Keys, HostLaunchPipeline.EmulatorSettings]:
+        can LaunchNative.FFI, HostLaunchPipeline.BootLog:
+            if intent.log_append != 0:
+                _ = shadps4_elisa_pipeline_set_log_append()
+            if shadps4_elisa_pipeline_setup_boot_log() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.IPC:
+            if shadps4_elisa_pipeline_initialize_ipc() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.EmulatorState:
+            if shadps4_elisa_pipeline_initialize_emulator_state() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.UserSettings:
+            if shadps4_elisa_pipeline_load_user_settings() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.Config:
+            if shadps4_elisa_pipeline_load_config() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.Keys:
+            if shadps4_elisa_pipeline_load_keys() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.EmulatorSettings:
+            if shadps4_elisa_pipeline_load_emulator_settings() == 0:
+                return 0
+        can LaunchNative.FFI, HostLaunchPipeline.BootLog, HostLaunchPipeline.EmulatorSettings:
+            if shadps4_elisa_pipeline_restart_log_from_settings() == 0:
+                return 0
+        return 1
 
     def handle_utility_command(executable_name: u8&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.UtilityCommand]:
         can LaunchNative.FFI, HostLaunchPipeline.UtilityCommand:
@@ -89,14 +131,12 @@ module LaunchPipeline:
                 intent.override_root
             )
 
-    def run_parsed_launch(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator]:
+    def run_parsed_launch(executable_name: u8&, argc: i64, argv: u8&&, intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.BootLog, HostLaunchPipeline.IPC, HostLaunchPipeline.EmulatorState, HostLaunchPipeline.UserSettings, HostLaunchPipeline.Config, HostLaunchPipeline.Keys, HostLaunchPipeline.EmulatorSettings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator]:
         can LaunchNative.FFI, HostLaunchPipeline.WaitForPid:
             _ = LaunchPipeline::run_wait_for_pid(intent)
 
-        can LaunchNative.FFI, HostLaunchPipeline.Settings:
-            if intent.log_append != 0:
-                _ = shadps4_elisa_pipeline_set_log_append()
-            if shadps4_elisa_pipeline_initialize_runtime_settings() == 0:
+        can LaunchNative.FFI, HostLaunchPipeline.BootLog, HostLaunchPipeline.IPC, HostLaunchPipeline.EmulatorState, HostLaunchPipeline.UserSettings, HostLaunchPipeline.Config, HostLaunchPipeline.Keys, HostLaunchPipeline.EmulatorSettings:
+            if LaunchPipeline::initialize_runtime_settings(intent) == 0:
                 return 1
 
         if intent.kind == SHAD::LAUNCH_KIND_BIG_PICTURE or intent.kind == SHAD::LAUNCH_KIND_ADD_GAME_FOLDER or intent.kind == SHAD::LAUNCH_KIND_SET_ADDON_FOLDER:

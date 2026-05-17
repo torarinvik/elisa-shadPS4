@@ -17,7 +17,7 @@ def shadps4_elisa_report_launch_error(intent: mutable ShadLaunchIntentCABI&) -> 
         _ = shadps4_elisa_main_print_error(message.cast[u8&])
     return intent.exit_code
 
-def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, LaunchFS.Read, HostMain.NoArgs, HostMain.Help, HostMain.ReportError, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator]:
+def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, LaunchFS.Read, HostMain.NoArgs, HostMain.Help, HostMain.ReportError, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.BootLog, HostLaunchPipeline.IPC, HostLaunchPipeline.EmulatorState, HostLaunchPipeline.UserSettings, HostLaunchPipeline.Config, HostLaunchPipeline.Keys, HostLaunchPipeline.EmulatorSettings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator]:
     intent: mutable ShadLaunchIntentFFI = zeroed
     can LaunchNative.FFI, LaunchFS.Read:
         if shadps4_elisa_parse_launch_intent_impl(argc, argv, intent.ref[mutable ShadLaunchIntentFFI&]) == 0:
@@ -35,7 +35,7 @@ def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, 
         can LaunchNative.FFI, HostMain.ReportError:
             return shadps4_elisa_report_launch_error(intent.ref[mutable ShadLaunchIntentCABI&])
 
-    can LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator:
+    can LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.BootLog, HostLaunchPipeline.IPC, HostLaunchPipeline.EmulatorState, HostLaunchPipeline.UserSettings, HostLaunchPipeline.Config, HostLaunchPipeline.Keys, HostLaunchPipeline.EmulatorSettings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.ResolveGame, HostLaunchPipeline.StartEmulator:
         return LaunchPipeline::run_parsed_launch(intent.executable_name, argc, argv, intent.ref[mutable ShadLaunchIntentCABI&])
 
 export func shadps4_elisa_main(argc: i64, argv: u8&&) -> int = shadps4_elisa_main_impl
