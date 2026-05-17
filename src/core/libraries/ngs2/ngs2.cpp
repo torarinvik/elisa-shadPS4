@@ -238,6 +238,18 @@ void ZeroRenderBuffers(const OrbisNgs2RenderBufferInfo* aBufferInfo, u32 numBuff
     }
 }
 
+void TraceRenderBuffers(const OrbisNgs2RenderBufferInfo* aBufferInfo, u32 numBufferInfo) {
+    if (!IsNgs2TraceEnabled() || !aBufferInfo) {
+        return;
+    }
+    for (u32 i = 0; i < numBufferInfo; ++i) {
+        const auto& buffer = aBufferInfo[i];
+        LOG_INFO(Lib_Ngs2,
+                 "render buffer[{}]: ptr={} size={} waveformType={} numChannels={}", i,
+                 buffer.buffer, buffer.bufferSize, buffer.waveformType, buffer.numChannels);
+    }
+}
+
 void TraceVoiceParams(OrbisNgs2Handle voiceHandle, const OrbisNgs2VoiceParamHeader* paramList) {
     if (!IsNgs2TraceEnabled() || !paramList) {
         return;
@@ -265,6 +277,19 @@ void TraceVoiceParams(OrbisNgs2Handle voiceHandle, const OrbisNgs2VoiceParamHead
                      "voice {} param[{}]: id={:#x} size={} next={} data={} numBlocks={}",
                      voiceHandle, index, param->id, param->size, param->next, blocks->data,
                      blocks->numBlocks);
+            if (blocks->aBlock && blocks->numBlocks != 0) {
+                const auto count =
+                    std::min<u32>(blocks->numBlocks, ORBIS_NGS2_WAVEFORM_INFO_MAX_BLOCKS);
+                for (u32 block_index = 0; block_index < count; ++block_index) {
+                    const auto& block = blocks->aBlock[block_index];
+                    LOG_INFO(Lib_Ngs2,
+                             "voice {} waveform block[{}]: offset={} size={} repeats={} "
+                             "skipSamples={} samples={} userData={:#x}",
+                             voiceHandle, block_index, block.dataOffset, block.dataSize,
+                             block.numRepeats, block.numSkipSamples, block.numSamples,
+                             block.userData);
+                }
+            }
         } else if (param->size >= sizeof(OrbisNgs2CustomSamplerVoicePitchParam) &&
                    param->id == static_cast<u32>(OrbisNgs2CustomSamplerParamId::Pitch)) {
             const auto* pitch = reinterpret_cast<const OrbisNgs2CustomSamplerVoicePitchParam*>(param);
@@ -904,6 +929,7 @@ s32 PS4_SYSV_ABI sceNgs2SystemRender(OrbisNgs2Handle systemHandle,
         }
     }
     ZeroRenderBuffers(aBufferInfo, numBufferInfo);
+    TraceRenderBuffers(aBufferInfo, numBufferInfo);
     return ORBIS_OK;
 }
 
