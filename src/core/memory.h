@@ -330,6 +330,8 @@ private:
 
     s32 UnmapMemoryImpl(VAddr virtual_addr, u64 size);
 
+    VAddr ResolveRelocatedAddress(VAddr virtual_addr) const;
+
 private:
     AddressSpace impl;
     PhysMap dmem_map;
@@ -355,6 +357,13 @@ private:
         }
     };
     std::array<PrtArea, 3> prt_areas{};
+
+    struct RelocatedMapping {
+        VAddr original;
+        VAddr relocated;
+        u64 size;
+    };
+    std::map<VAddr, RelocatedMapping> relocated_mappings;
 
     friend class ::Core::Devtools::Widget::MemoryMapViewer;
 };

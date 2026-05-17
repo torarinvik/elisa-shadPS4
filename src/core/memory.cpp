@@ -14,13 +14,33 @@
 #include "core/memory.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+#include <cstdlib>
+
 namespace Core {
 
-static void LogInvalidFixedMapping(VAddr virtual_addr, u64 size, std::string_view kind) {
+static bool IsAppleFixedRelocationEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_ALLOW_APPLE_FIXED_RELOCATION");
+        return value != nullptr && std::string_view{value} == "1";
+    }();
+    return enabled;
+}
+
+static bool IsAppleGpuReservedOverlap(VAddr virtual_addr, u64 size) {
 #if defined(__APPLE__) && defined(ARCH_X86_64)
     static constexpr VAddr AppleGpuReservedStart = 0x1000000000ULL;
     static constexpr VAddr AppleGpuReservedEnd = 0x7000000000ULL;
-    if (virtual_addr < AppleGpuReservedEnd && virtual_addr + size > AppleGpuReservedStart) {
+    return virtual_addr < AppleGpuReservedEnd && virtual_addr + size > AppleGpuReservedStart;
+#else
+    return false;
+#endif
+}
+
+static void LogInvalidFixedMapping(VAddr virtual_addr, u64 size, std::string_view kind) {
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+    if (IsAppleGpuReservedOverlap(virtual_addr, size)) {
+        static constexpr VAddr AppleGpuReservedStart = 0x1000000000ULL;
+        static constexpr VAddr AppleGpuReservedEnd = 0x7000000000ULL;
         LOG_ERROR(Kernel_Vmm,
                   "Unable to map {} {:#x} bytes at address {:#x}: range overlaps the macOS "
                   "x86_64-on-Apple-Silicon GPU-reserved address hole {:#x}-{:#x}",
@@ -383,6 +403,13 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
 s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32 mtype) {
     std::scoped_lock lk{unmap_mutex};
     std::unique_lock lk2{mutex};
+    const auto original_addr = virtual_addr;
+    virtual_addr = ResolveRelocatedAddress(virtual_addr);
+    if (virtual_addr != original_addr) {
+        LOG_WARNING(Kernel_Vmm, "Redirecting pooled commit from relocated guest address {:#x} "
+                                "to host-mapped address {:#x}, size={:#x}",
+                    original_addr, virtual_addr, size);
+    }
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
@@ -519,6 +546,10 @@ MemoryManager::VMAHandle MemoryManager::CreateArea(VAddr virtual_addr, u64 size,
 s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, MemoryProt prot,
                              MemoryMapFlags flags, VMAType type, std::string_view name,
                              bool validate_dmem, PAddr phys_addr, u64 alignment) {
+    auto effective_flags = flags;
+    VAddr relocated_from = 0;
+    bool relocated_mapping = false;
+
     // Certain games perform flexible mappings on loop to determine
     // the available flexible memory size. Questionable but we need to handle this.
     if (type == VMAType::Flexible && flexible_usage + size > total_flexible_size) {
@@ -561,19 +592,40 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
         }
     }
 
-    if (True(flags & MemoryMapFlags::Fixed) && True(flags & MemoryMapFlags::NoOverwrite)) {
+    if (True(effective_flags & MemoryMapFlags::Fixed) &&
+        True(effective_flags & MemoryMapFlags::NoOverwrite)) {
         // Perform necessary error checking for Fixed & NoOverwrite case
         if (!IsValidMapping(virtual_addr, size)) {
+            if (IsAppleGpuReservedOverlap(virtual_addr, size) && IsAppleFixedRelocationEnabled()) {
+                alignment = alignment > 0 ? alignment : 16_KB;
+                const auto requested_addr = virtual_addr;
+                virtual_addr = SearchFree(DEFAULT_MAPPING_BASE, size, alignment);
+                if (virtual_addr == -1) {
+                    return ORBIS_KERNEL_ERROR_ENOMEM;
+                }
+                relocated_from = requested_addr;
+                relocated_mapping = true;
+                effective_flags &= ~MemoryMapFlags::Fixed;
+                effective_flags &= ~MemoryMapFlags::NoOverwrite;
+                LOG_WARNING(Kernel_Vmm,
+                            "Relocating fixed mapping from unusable macOS GPU-reserved address "
+                            "{:#x} to {:#x}, size={:#x}, name='{}'",
+                            requested_addr, virtual_addr, size, name);
+            } else {
             LogInvalidFixedMapping(virtual_addr, size, "fixed");
             return ORBIS_KERNEL_ERROR_ENOMEM;
+            }
         }
-        auto vma = FindVMA(virtual_addr)->second;
-        auto remaining_size = vma.base + vma.size - virtual_addr;
-        if (!vma.IsFree() || remaining_size < size) {
-            LOG_ERROR(Kernel_Vmm, "Unable to map {:#x} bytes at address {:#x}", size, virtual_addr);
-            return ORBIS_KERNEL_ERROR_ENOMEM;
+        if (True(effective_flags & MemoryMapFlags::Fixed)) {
+            auto vma = FindVMA(virtual_addr)->second;
+            auto remaining_size = vma.base + vma.size - virtual_addr;
+            if (!vma.IsFree() || remaining_size < size) {
+                LOG_ERROR(Kernel_Vmm, "Unable to map {:#x} bytes at address {:#x}", size,
+                          virtual_addr);
+                return ORBIS_KERNEL_ERROR_ENOMEM;
+            }
         }
-    } else if (False(flags & MemoryMapFlags::Fixed)) {
+    } else if (False(effective_flags & MemoryMapFlags::Fixed)) {
         // Find a free virtual addr to map
         alignment = alignment > 0 ? alignment : 16_KB;
         virtual_addr = virtual_addr == 0 ? DEFAULT_MAPPING_BASE : virtual_addr;
@@ -593,9 +645,17 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
     std::unique_lock lk2{mutex};
 
     // Create VMA representing this mapping.
-    auto new_vma_handle = CreateArea(virtual_addr, size, prot, flags, type, name, alignment);
+    auto new_vma_handle =
+        CreateArea(virtual_addr, size, prot, effective_flags, type, name, alignment);
     auto& new_vma = new_vma_handle->second;
     auto mapped_addr = new_vma.base;
+    if (relocated_mapping) {
+        relocated_mappings[relocated_from] = RelocatedMapping{
+            .original = relocated_from,
+            .relocated = mapped_addr,
+            .size = size,
+        };
+    }
     bool is_exec = True(prot & MemoryProt::CpuExec);
 
     // If type is Flexible, we need to track how much flexible memory is used here.
@@ -1453,6 +1513,18 @@ VAddr MemoryManager::SearchFree(VAddr virtual_addr, u64 size, u32 alignment) {
     LOG_ERROR(Kernel_Vmm, "Couldn't find a free mapping for address {:#x}, size {:#x}",
               virtual_addr, size);
     return -1;
+}
+
+VAddr MemoryManager::ResolveRelocatedAddress(VAddr virtual_addr) const {
+    const auto upper = relocated_mappings.upper_bound(virtual_addr);
+    if (upper == relocated_mappings.begin()) {
+        return virtual_addr;
+    }
+    const auto& mapping = std::prev(upper)->second;
+    if (virtual_addr >= mapping.original && virtual_addr < mapping.original + mapping.size) {
+        return mapping.relocated + (virtual_addr - mapping.original);
+    }
+    return virtual_addr;
 }
 
 MemoryManager::VMAHandle MemoryManager::MergeAdjacent(VMAMap& handle_map, VMAHandle iter) {
