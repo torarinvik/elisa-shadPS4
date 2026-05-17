@@ -12,13 +12,450 @@
 #include "core/libraries/ngs2/ngs2_pan.h"
 #include "core/libraries/ngs2/ngs2_report.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 namespace Libraries::Ngs2 {
+
+namespace {
+
+constexpr OrbisNgs2Handle FirstSyntheticHandle = 0x100000;
+constexpr u32 DefaultMaxVoices = 64;
+constexpr u32 VoiceStateActive = 1u << 0;
+constexpr u32 MaxTrackedPorts = 16;
+constexpr u32 MaxTrackedMatrices = 16;
+
+enum class OrbisNgs2VoiceParamId : u32 {
+    MatrixLevels = 1,
+    PortVolume = 2,
+    Event = 3,
+    Callback = 5,
+    Patch = 6,
+};
+
+enum class OrbisNgs2CustomSamplerParamId : u32 {
+    Setup = 0x10000000,
+    WaveformBlocks = 0x10000001,
+    WaveformAddress = 0x10000002,
+    WaveformFrameOffset = 0x10000003,
+    ExitLoop = 0x10000004,
+    Pitch = 0x10000005,
+};
+
+struct VoiceRuntimeState {
+    OrbisNgs2Handle handle = 0;
+    OrbisNgs2Handle rackHandle = 0;
+    u32 voiceIndex = 0;
+    u32 stateFlags = 0;
+    u64 controlCount = 0;
+    std::array<OrbisNgs2VoicePortInfo, MaxTrackedPorts> ports{};
+    std::array<OrbisNgs2VoiceMatrixInfo, MaxTrackedMatrices> matrices{};
+    OrbisNgs2VoiceCallbackHandler callbackHandler = nullptr;
+    uintptr_t callbackData = 0;
+    OrbisNgs2WaveformFormat waveformFormat{};
+    const void* waveformData = nullptr;
+    const void* waveformEnd = nullptr;
+    std::vector<OrbisNgs2WaveformBlock> waveformBlocks;
+    u32 waveformFrameOffset = 0;
+    float pitchRatio = 1.0f;
+    u64 decodedDataSize = 0;
+    u64 decodedSamples = 0;
+};
+
+struct RackRuntimeState {
+    OrbisNgs2Handle handle = 0;
+    OrbisNgs2Handle systemHandle = 0;
+    OrbisNgs2ContextBufferInfo bufferInfo{};
+    uintptr_t userData = 0;
+    u32 rackId = 0;
+    u32 maxVoices = 0;
+    u64 renderCount = 0;
+    std::vector<OrbisNgs2Handle> voices;
+};
+
+struct SystemRuntimeState {
+    OrbisNgs2Handle handle = 0;
+    OrbisNgs2ContextBufferInfo bufferInfo{};
+    uintptr_t userData = 0;
+    u32 sampleRate = 48000;
+    u32 maxGrainSamples = 512;
+    u32 numGrainSamples = 256;
+    u64 renderCount = 0;
+    std::vector<OrbisNgs2Handle> racks;
+};
+
+std::mutex g_state_mutex;
+std::atomic<OrbisNgs2Handle> g_next_handle{FirstSyntheticHandle};
+std::unordered_map<OrbisNgs2Handle, SystemRuntimeState> g_systems;
+std::unordered_map<OrbisNgs2Handle, RackRuntimeState> g_racks;
+std::unordered_map<OrbisNgs2Handle, VoiceRuntimeState> g_voices;
+
+OrbisNgs2Handle AllocateHandle() {
+    return g_next_handle.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool IsNgs2TraceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_NGS2_TRACE");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+void CopyBufferInfo(const OrbisNgs2ContextBufferInfo* src, OrbisNgs2ContextBufferInfo* dst) {
+    if (!dst) {
+        return;
+    }
+    if (src) {
+        *dst = *src;
+    } else {
+        std::memset(dst, 0, sizeof(*dst));
+    }
+}
+
+OrbisNgs2Handle RegisterSystem(const OrbisNgs2SystemOption* option,
+                               const OrbisNgs2ContextBufferInfo* bufferInfo) {
+    SystemRuntimeState system{};
+    system.handle = AllocateHandle();
+    CopyBufferInfo(bufferInfo, &system.bufferInfo);
+    if (option) {
+        system.sampleRate = option->sampleRate ? option->sampleRate : system.sampleRate;
+        system.maxGrainSamples =
+            option->maxGrainSamples ? option->maxGrainSamples : system.maxGrainSamples;
+        system.numGrainSamples =
+            option->numGrainSamples ? option->numGrainSamples : system.numGrainSamples;
+    }
+
+    const auto handle = system.handle;
+    std::scoped_lock lock{g_state_mutex};
+    g_systems.emplace(handle, system);
+    return handle;
+}
+
+OrbisNgs2Handle RegisterRackLocked(SystemRuntimeState& system, u32 rackId,
+                                   const OrbisNgs2RackOption* option,
+                                   const OrbisNgs2ContextBufferInfo* bufferInfo) {
+    RackRuntimeState rack{};
+    rack.handle = AllocateHandle();
+    rack.systemHandle = system.handle;
+    rack.rackId = rackId;
+    rack.maxVoices = option && option->maxVoices ? option->maxVoices : DefaultMaxVoices;
+    CopyBufferInfo(bufferInfo, &rack.bufferInfo);
+    rack.voices.reserve(rack.maxVoices);
+
+    const auto rackHandle = rack.handle;
+    for (u32 index = 0; index < rack.maxVoices; ++index) {
+        VoiceRuntimeState voice{};
+        voice.handle = AllocateHandle();
+        voice.rackHandle = rackHandle;
+        voice.voiceIndex = index;
+        for (auto& port : voice.ports) {
+            port.matrixId = -1;
+            port.volume = 1.0f;
+        }
+        for (auto& matrix : voice.matrices) {
+            matrix.numLevels = 0;
+        }
+        rack.voices.push_back(voice.handle);
+        g_voices.emplace(voice.handle, voice);
+    }
+
+    system.racks.push_back(rackHandle);
+    g_racks.emplace(rackHandle, std::move(rack));
+    return rackHandle;
+}
+
+void RemoveRackLocked(OrbisNgs2Handle rackHandle) {
+    const auto rack_it = g_racks.find(rackHandle);
+    if (rack_it == g_racks.end()) {
+        return;
+    }
+
+    for (const auto voice : rack_it->second.voices) {
+        g_voices.erase(voice);
+    }
+
+    if (auto system_it = g_systems.find(rack_it->second.systemHandle); system_it != g_systems.end()) {
+        auto& racks = system_it->second.racks;
+        std::erase(racks, rackHandle);
+    }
+    g_racks.erase(rack_it);
+}
+
+void FillSystemInfo(const SystemRuntimeState& system, OrbisNgs2SystemInfo* outInfo,
+                    size_t infoSize) {
+    const auto bytes = std::min(infoSize, sizeof(OrbisNgs2SystemInfo));
+    std::memset(outInfo, 0, infoSize);
+    OrbisNgs2SystemInfo info{};
+    info.systemHandle = system.handle;
+    info.bufferInfo = system.bufferInfo;
+    info.uid = static_cast<u32>(system.handle);
+    info.minGrainSamples = system.numGrainSamples;
+    info.maxGrainSamples = system.maxGrainSamples;
+    info.rackCount = static_cast<u32>(system.racks.size());
+    info.renderCount = static_cast<s64>(system.renderCount);
+    info.sampleRate = system.sampleRate;
+    info.numGrainSamples = system.numGrainSamples;
+    std::memcpy(outInfo, &info, bytes);
+}
+
+void FillRackInfo(const RackRuntimeState& rack, OrbisNgs2RackInfo* outInfo, size_t infoSize) {
+    const auto bytes = std::min(infoSize, sizeof(OrbisNgs2RackInfo));
+    std::memset(outInfo, 0, infoSize);
+    OrbisNgs2RackInfo info{};
+    info.rackHandle = rack.handle;
+    info.bufferInfo = rack.bufferInfo;
+    info.ownerSystemHandle = rack.systemHandle;
+    info.rackId = rack.rackId;
+    info.uid = static_cast<u32>(rack.handle);
+    info.maxVoices = rack.maxVoices;
+    info.renderCount = rack.renderCount;
+    for (const auto voiceHandle : rack.voices) {
+        const auto voice_it = g_voices.find(voiceHandle);
+        if (voice_it != g_voices.end() && voice_it->second.stateFlags != 0) {
+            ++info.activeVoiceCount;
+        }
+    }
+    std::memcpy(outInfo, &info, bytes);
+}
+
+void ZeroRenderBuffers(const OrbisNgs2RenderBufferInfo* aBufferInfo, u32 numBufferInfo) {
+    if (!aBufferInfo) {
+        return;
+    }
+    for (u32 i = 0; i < numBufferInfo; ++i) {
+        const auto& buffer = aBufferInfo[i];
+        if (buffer.buffer && buffer.bufferSize > 0) {
+            std::memset(buffer.buffer, 0, buffer.bufferSize);
+        }
+    }
+}
+
+void TraceVoiceParams(OrbisNgs2Handle voiceHandle, const OrbisNgs2VoiceParamHeader* paramList) {
+    if (!IsNgs2TraceEnabled() || !paramList) {
+        return;
+    }
+
+    const auto* param = paramList;
+    for (u32 index = 0; index < 64 && param; ++index) {
+        if (param->size >= sizeof(OrbisNgs2VoiceEventParam) &&
+            param->id == static_cast<u32>(OrbisNgs2VoiceParamId::Event)) {
+            const auto* event = reinterpret_cast<const OrbisNgs2VoiceEventParam*>(param);
+            LOG_INFO(Lib_Ngs2, "voice {} param[{}]: id={:#x} size={} next={} event={:#x}",
+                     voiceHandle, index, param->id, param->size, param->next, event->eventId);
+        } else if (param->size >= sizeof(OrbisNgs2VoicePortVolumeParam) &&
+                   param->id == static_cast<u32>(OrbisNgs2VoiceParamId::PortVolume)) {
+            const auto* volume = reinterpret_cast<const OrbisNgs2VoicePortVolumeParam*>(param);
+            LOG_INFO(Lib_Ngs2, "voice {} param[{}]: id={:#x} size={} next={} port={} volume={}",
+                     voiceHandle, index, param->id, param->size, param->next, volume->port,
+                     volume->level);
+        } else if (param->size >= sizeof(OrbisNgs2CustomSamplerVoiceWaveformBlocksParam) &&
+                   param->id ==
+                       static_cast<u32>(OrbisNgs2CustomSamplerParamId::WaveformBlocks)) {
+            const auto* blocks =
+                reinterpret_cast<const OrbisNgs2CustomSamplerVoiceWaveformBlocksParam*>(param);
+            LOG_INFO(Lib_Ngs2,
+                     "voice {} param[{}]: id={:#x} size={} next={} data={} numBlocks={}",
+                     voiceHandle, index, param->id, param->size, param->next, blocks->data,
+                     blocks->numBlocks);
+        } else if (param->size >= sizeof(OrbisNgs2CustomSamplerVoicePitchParam) &&
+                   param->id == static_cast<u32>(OrbisNgs2CustomSamplerParamId::Pitch)) {
+            const auto* pitch = reinterpret_cast<const OrbisNgs2CustomSamplerVoicePitchParam*>(param);
+            LOG_INFO(Lib_Ngs2, "voice {} param[{}]: id={:#x} size={} next={} pitch={}",
+                     voiceHandle, index, param->id, param->size, param->next, pitch->ratio);
+        } else {
+            LOG_INFO(Lib_Ngs2, "voice {} param[{}]: id={:#x} size={} next={}", voiceHandle, index,
+                     param->id, param->size, param->next);
+        }
+        if (param->size < sizeof(OrbisNgs2VoiceParamHeader) || param->next <= 0) {
+            break;
+        }
+        param = reinterpret_cast<const OrbisNgs2VoiceParamHeader*>(
+            reinterpret_cast<const u8*>(param) + param->next);
+    }
+}
+
+void ApplyVoiceParam(VoiceRuntimeState& voice, const OrbisNgs2VoiceParamHeader* param) {
+    switch (static_cast<OrbisNgs2VoiceParamId>(param->id)) {
+    case OrbisNgs2VoiceParamId::MatrixLevels: {
+        if (param->size < sizeof(OrbisNgs2VoiceMatrixLevelsParam)) {
+            return;
+        }
+        const auto* levels = reinterpret_cast<const OrbisNgs2VoiceMatrixLevelsParam*>(param);
+        if (levels->matrixId >= voice.matrices.size() || !levels->aLevel) {
+            return;
+        }
+        auto& matrix = voice.matrices[levels->matrixId];
+        matrix.numLevels = std::min<u32>(levels->numLevels, ORBIS_NGS2_MAX_MATRIX_LEVELS);
+        std::copy_n(levels->aLevel, matrix.numLevels, matrix.aLevel);
+        break;
+    }
+    case OrbisNgs2VoiceParamId::PortVolume: {
+        if (param->size < sizeof(OrbisNgs2VoicePortVolumeParam)) {
+            return;
+        }
+        const auto* volume = reinterpret_cast<const OrbisNgs2VoicePortVolumeParam*>(param);
+        if (volume->port < voice.ports.size()) {
+            voice.ports[volume->port].volume = volume->level;
+        }
+        break;
+    }
+    case OrbisNgs2VoiceParamId::Event: {
+        if (param->size < sizeof(OrbisNgs2VoiceEventParam)) {
+            return;
+        }
+        const auto* event = reinterpret_cast<const OrbisNgs2VoiceEventParam*>(param);
+        if (event->eventId == 0) {
+            voice.stateFlags |= VoiceStateActive;
+        } else if (event->eventId == 1) {
+            voice.stateFlags &= ~VoiceStateActive;
+        }
+        break;
+    }
+    case OrbisNgs2VoiceParamId::Callback: {
+        if (param->size < sizeof(OrbisNgs2VoiceCallbackParam)) {
+            return;
+        }
+        const auto* callback = reinterpret_cast<const OrbisNgs2VoiceCallbackParam*>(param);
+        voice.callbackHandler = callback->callbackHandler;
+        voice.callbackData = callback->callbackData;
+        break;
+    }
+    case OrbisNgs2VoiceParamId::Patch: {
+        if (param->size < sizeof(OrbisNgs2VoicePatchParam)) {
+            return;
+        }
+        const auto* patch = reinterpret_cast<const OrbisNgs2VoicePatchParam*>(param);
+        if (patch->port < voice.ports.size()) {
+            voice.ports[patch->port].destInputId = patch->destInputId;
+            voice.ports[patch->port].destHandle = patch->destHandle;
+        }
+        break;
+    }
+    default:
+        switch (static_cast<OrbisNgs2CustomSamplerParamId>(param->id)) {
+        case OrbisNgs2CustomSamplerParamId::Setup: {
+            if (param->size < sizeof(OrbisNgs2CustomSamplerVoiceSetupParam)) {
+                return;
+            }
+            const auto* setup = reinterpret_cast<const OrbisNgs2CustomSamplerVoiceSetupParam*>(param);
+            voice.waveformFormat = setup->format;
+            break;
+        }
+        case OrbisNgs2CustomSamplerParamId::WaveformBlocks: {
+            if (param->size < sizeof(OrbisNgs2CustomSamplerVoiceWaveformBlocksParam)) {
+                return;
+            }
+            const auto* blocks =
+                reinterpret_cast<const OrbisNgs2CustomSamplerVoiceWaveformBlocksParam*>(param);
+            voice.waveformData = blocks->data;
+            voice.waveformBlocks.clear();
+            if (blocks->aBlock && blocks->numBlocks != 0) {
+                const auto count =
+                    std::min<u32>(blocks->numBlocks, ORBIS_NGS2_WAVEFORM_INFO_MAX_BLOCKS);
+                voice.waveformBlocks.assign(blocks->aBlock, blocks->aBlock + count);
+                voice.decodedDataSize = 0;
+                voice.decodedSamples = 0;
+                for (const auto& block : voice.waveformBlocks) {
+                    voice.decodedDataSize += block.dataSize;
+                    voice.decodedSamples += block.numSamples;
+                }
+            }
+            break;
+        }
+        case OrbisNgs2CustomSamplerParamId::WaveformAddress: {
+            if (param->size < sizeof(OrbisNgs2CustomSamplerVoiceWaveformAddressParam)) {
+                return;
+            }
+            const auto* address =
+                reinterpret_cast<const OrbisNgs2CustomSamplerVoiceWaveformAddressParam*>(param);
+            voice.waveformData = address->from;
+            voice.waveformEnd = address->to;
+            break;
+        }
+        case OrbisNgs2CustomSamplerParamId::WaveformFrameOffset: {
+            if (param->size < sizeof(OrbisNgs2CustomSamplerVoiceWaveformFrameOffsetParam)) {
+                return;
+            }
+            const auto* frame =
+                reinterpret_cast<const OrbisNgs2CustomSamplerVoiceWaveformFrameOffsetParam*>(param);
+            voice.waveformFrameOffset = frame->frameOffset;
+            break;
+        }
+        case OrbisNgs2CustomSamplerParamId::ExitLoop:
+            break;
+        case OrbisNgs2CustomSamplerParamId::Pitch: {
+            if (param->size < sizeof(OrbisNgs2CustomSamplerVoicePitchParam)) {
+                return;
+            }
+            const auto* pitch = reinterpret_cast<const OrbisNgs2CustomSamplerVoicePitchParam*>(param);
+            voice.pitchRatio = pitch->ratio;
+            break;
+        }
+        default:
+            break;
+        }
+        break;
+    }
+}
+
+void ApplyVoiceParams(VoiceRuntimeState& voice, const OrbisNgs2VoiceParamHeader* paramList) {
+    const auto* param = paramList;
+    for (u32 index = 0; index < 64 && param; ++index) {
+        if (param->size < sizeof(OrbisNgs2VoiceParamHeader)) {
+            break;
+        }
+        ApplyVoiceParam(voice, param);
+        if (param->next <= 0) {
+            break;
+        }
+        param = reinterpret_cast<const OrbisNgs2VoiceParamHeader*>(
+            reinterpret_cast<const u8*>(param) + param->next);
+    }
+}
+
+} // namespace
+
+static void FillFallbackWaveformInfo(const void* data, size_t dataSize,
+                                     OrbisNgs2WaveformInfo* outInfo) {
+    std::memset(outInfo, 0, sizeof(*outInfo));
+    outInfo->format.numChannels = 1;
+    outInfo->format.sampleRate = 48000;
+    outInfo->dataSize = static_cast<u32>(std::min<size_t>(dataSize, UINT32_MAX));
+    outInfo->audioUnitSize = 1;
+    outInfo->numAudioUnitSamples = 1;
+    outInfo->numAudioUnitPerFrame = 1;
+    outInfo->audioFrameSize = 1;
+    outInfo->numAudioFrameSamples = 1;
+    if (data != nullptr && dataSize != 0) {
+        outInfo->numBlocks = 1;
+        outInfo->aBlock[0].dataSize = outInfo->dataSize;
+        outInfo->aBlock[0].numRepeats = 1;
+        outInfo->aBlock[0].userData = reinterpret_cast<uintptr_t>(data);
+    }
+}
 
 // Ngs2
 
 s32 PS4_SYSV_ABI sceNgs2CalcWaveformBlock(const OrbisNgs2WaveformFormat* format, u32 samplePos,
                                           u32 numSamples, OrbisNgs2WaveformBlock* outBlock) {
     LOG_ERROR(Lib_Ngs2, "samplePos = {}, numSamples = {}", samplePos, numSamples);
+    if (!format) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    }
+    if (!outBlock) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_BLOCK_ADDRESS;
+    }
+    std::memset(outBlock, 0, sizeof(*outBlock));
+    outBlock->numRepeats = 1;
+    outBlock->numSamples = numSamples;
     return ORBIS_OK;
 }
 
@@ -26,24 +463,55 @@ s32 PS4_SYSV_ABI sceNgs2GetWaveformFrameInfo(const OrbisNgs2WaveformFormat* form
                                              u32* outFrameSize, u32* outNumFrameSamples,
                                              u32* outUnitsPerFrame, u32* outNumDelaySamples) {
     LOG_ERROR(Lib_Ngs2, "called");
+    if (!format) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    }
+    if (!outFrameSize || !outNumFrameSamples || !outUnitsPerFrame || !outNumDelaySamples) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    *outFrameSize = 1;
+    *outNumFrameSamples = 1;
+    *outUnitsPerFrame = 1;
+    *outNumDelaySamples = 0;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2ParseWaveformData(const void* data, size_t dataSize,
                                           OrbisNgs2WaveformInfo* outInfo) {
-    LOG_ERROR(Lib_Ngs2, "dataSize = {}", dataSize);
+    LOG_DEBUG(Lib_Ngs2, "(STUBBED) dataSize = {}", dataSize);
+    if (!data || dataSize == 0) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_DATA;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    FillFallbackWaveformInfo(data, dataSize, outInfo);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2ParseWaveformFile(const char* path, u64 offset,
                                           OrbisNgs2WaveformInfo* outInfo) {
     LOG_ERROR(Lib_Ngs2, "path = {}, offset = {}", path, offset);
+    if (!path) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_ADDRESS;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    FillFallbackWaveformInfo(nullptr, 0, outInfo);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2ParseWaveformUser(OrbisNgs2ParseReadHandler handler, uintptr_t userData,
                                           OrbisNgs2WaveformInfo* outInfo) {
     LOG_ERROR(Lib_Ngs2, "userData = {}", userData);
+    if (!handler) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_ADDRESS;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    FillFallbackWaveformInfo(nullptr, 0, outInfo);
     return ORBIS_OK;
 }
 
@@ -51,11 +519,21 @@ s32 PS4_SYSV_ABI sceNgs2RackCreate(OrbisNgs2Handle systemHandle, u32 rackId,
                                    const OrbisNgs2RackOption* option,
                                    const OrbisNgs2ContextBufferInfo* bufferInfo,
                                    OrbisNgs2Handle* outHandle) {
-    LOG_ERROR(Lib_Ngs2, "rackId = {}", rackId);
+    LOG_DEBUG(Lib_Ngs2, "rackId = {}", rackId);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    if (!outHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+
+    std::scoped_lock lock{g_state_mutex};
+    auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    *outHandle = RegisterRackLocked(system->second, rackId, option, bufferInfo);
     return ORBIS_OK;
 }
 
@@ -63,34 +541,110 @@ s32 PS4_SYSV_ABI sceNgs2RackCreateWithAllocator(OrbisNgs2Handle systemHandle, u3
                                                 const OrbisNgs2RackOption* option,
                                                 const OrbisNgs2BufferAllocator* allocator,
                                                 OrbisNgs2Handle* outHandle) {
-    LOG_ERROR(Lib_Ngs2, "rackId = {}", rackId);
+    LOG_DEBUG(Lib_Ngs2, "rackId = {}", rackId);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    if (!allocator || !allocator->allocHandler) {
+        return ORBIS_NGS2_ERROR_INVALID_BUFFER_ALLOCATOR;
+    }
+    if (!outHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+
+    OrbisNgs2ContextBufferInfo bufferInfo{};
+    bufferInfo.userData = allocator->userData;
+    const auto maxVoices = option && option->maxVoices ? option->maxVoices : DefaultMaxVoices;
+    bufferInfo.hostBufferSize = sizeof(RackRuntimeState) + maxVoices * sizeof(VoiceRuntimeState);
+    if (const auto alloc_result = allocator->allocHandler(&bufferInfo); alloc_result < 0) {
+        return alloc_result;
+    }
+
+    std::scoped_lock lock{g_state_mutex};
+    auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        if (allocator->freeHandler) {
+            allocator->freeHandler(&bufferInfo);
+        }
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    *outHandle = RegisterRackLocked(system->second, rackId, option, &bufferInfo);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2RackDestroy(OrbisNgs2Handle rackHandle,
                                     OrbisNgs2ContextBufferInfo* outBufferInfo) {
-    LOG_ERROR(Lib_Ngs2, "called");
+    LOG_DEBUG(Lib_Ngs2, "called");
+    if (!rackHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto rack = g_racks.find(rackHandle);
+    if (rack == g_racks.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    CopyBufferInfo(&rack->second.bufferInfo, outBufferInfo);
+    RemoveRackLocked(rackHandle);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2RackGetInfo(OrbisNgs2Handle rackHandle, OrbisNgs2RackInfo* outInfo,
                                     size_t infoSize) {
-    LOG_ERROR(Lib_Ngs2, "infoSize = {}", infoSize);
+    LOG_DEBUG(Lib_Ngs2, "infoSize = {}", infoSize);
+    if (!rackHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    if (infoSize < sizeof(OrbisNgs2RackInfo)) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_SIZE;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto rack = g_racks.find(rackHandle);
+    if (rack == g_racks.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    FillRackInfo(rack->second, outInfo, infoSize);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2RackGetUserData(OrbisNgs2Handle rackHandle, uintptr_t* outUserData) {
-    LOG_ERROR(Lib_Ngs2, "called");
+    LOG_DEBUG(Lib_Ngs2, "called");
+    if (!rackHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    if (!outUserData) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto rack = g_racks.find(rackHandle);
+    if (rack == g_racks.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    *outUserData = rack->second.userData;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2RackGetVoiceHandle(OrbisNgs2Handle rackHandle, u32 voiceIndex,
                                            OrbisNgs2Handle* outHandle) {
-    LOG_DEBUG(Lib_Ngs2, "(STUBBED) voiceIndex = {}", voiceIndex);
+    LOG_DEBUG(Lib_Ngs2, "voiceIndex = {}", voiceIndex);
+    if (!rackHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    if (!outHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto rack = g_racks.find(rackHandle);
+    if (rack == g_racks.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    if (voiceIndex >= rack->second.voices.size()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_INDEX;
+    }
+    *outHandle = rack->second.voices[voiceIndex];
     return ORBIS_OK;
 }
 
@@ -101,12 +655,27 @@ s32 PS4_SYSV_ABI sceNgs2RackLock(OrbisNgs2Handle rackHandle) {
 
 s32 PS4_SYSV_ABI sceNgs2RackQueryBufferSize(u32 rackId, const OrbisNgs2RackOption* option,
                                             OrbisNgs2ContextBufferInfo* outBufferInfo) {
-    LOG_ERROR(Lib_Ngs2, "rackId = {}", rackId);
+    LOG_DEBUG(Lib_Ngs2, "rackId = {}", rackId);
+    if (!outBufferInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::memset(outBufferInfo, 0, sizeof(*outBufferInfo));
+    const auto maxVoices = option && option->maxVoices ? option->maxVoices : DefaultMaxVoices;
+    outBufferInfo->hostBufferSize = sizeof(RackRuntimeState) + maxVoices * sizeof(VoiceRuntimeState);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2RackSetUserData(OrbisNgs2Handle rackHandle, uintptr_t userData) {
-    LOG_ERROR(Lib_Ngs2, "userData = {}", userData);
+    LOG_DEBUG(Lib_Ngs2, "userData = {}", userData);
+    if (!rackHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    auto rack = g_racks.find(rackHandle);
+    if (rack == g_racks.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_RACK_HANDLE;
+    }
+    rack->second.userData = userData;
     return ORBIS_OK;
 }
 
@@ -140,6 +709,9 @@ s32 PS4_SYSV_ABI sceNgs2SystemCreate(const OrbisNgs2SystemOption* option,
         localInfo.userData = bufferInfo->userData;
 
         result = SystemSetup(option, &localInfo, 0, outHandle);
+        if (result >= 0) {
+            *outHandle = RegisterSystem(option, &localInfo);
+        }
     }
 
     // TODO: API reporting?
@@ -157,13 +729,17 @@ s32 PS4_SYSV_ABI sceNgs2SystemCreateWithAllocator(const OrbisNgs2SystemOption* o
         if (outHandle) {
             OrbisNgs2BufferFreeHandler hostFree = allocator->freeHandler;
             OrbisNgs2ContextBufferInfo bufferInfo;
+            std::memset(&bufferInfo, 0, sizeof(bufferInfo));
+            bufferInfo.userData = allocator->userData;
             result = SystemSetup(option, &bufferInfo, 0, 0);
             if (result >= 0) {
-                uintptr_t sysUserData = allocator->userData;
                 result = hostAlloc(&bufferInfo);
                 if (result >= 0) {
                     OrbisNgs2Handle* handleCopy = outHandle;
                     result = SystemSetup(option, &bufferInfo, hostFree, handleCopy);
+                    if (result >= 0) {
+                        *handleCopy = RegisterSystem(option, &bufferInfo);
+                    }
                     if (result < 0) {
                         if (hostFree) {
                             hostFree(&bufferInfo);
@@ -189,28 +765,79 @@ s32 PS4_SYSV_ABI sceNgs2SystemDestroy(OrbisNgs2Handle systemHandle,
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    std::scoped_lock lock{g_state_mutex};
+    auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    CopyBufferInfo(&system->second.bufferInfo, outBufferInfo);
+    for (const auto rackHandle : system->second.racks) {
+        if (auto rack = g_racks.find(rackHandle); rack != g_racks.end()) {
+            for (const auto voiceHandle : rack->second.voices) {
+                g_voices.erase(voiceHandle);
+            }
+            g_racks.erase(rack);
+        }
+    }
+    g_systems.erase(system);
     LOG_INFO(Lib_Ngs2, "called");
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2SystemEnumHandles(OrbisNgs2Handle* aOutHandle, u32 maxHandles) {
-    LOG_ERROR(Lib_Ngs2, "maxHandles = {}", maxHandles);
-    return ORBIS_OK;
+    LOG_DEBUG(Lib_Ngs2, "maxHandles = {}", maxHandles);
+    if (!aOutHandle && maxHandles != 0) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    u32 count = 0;
+    for (const auto& [handle, _] : g_systems) {
+        if (count >= maxHandles) {
+            break;
+        }
+        aOutHandle[count++] = handle;
+    }
+    return static_cast<s32>(count);
 }
 
 s32 PS4_SYSV_ABI sceNgs2SystemEnumRackHandles(OrbisNgs2Handle systemHandle,
                                               OrbisNgs2Handle* aOutHandle, u32 maxHandles) {
-    LOG_ERROR(Lib_Ngs2, "maxHandles = {}", maxHandles);
+    LOG_DEBUG(Lib_Ngs2, "maxHandles = {}", maxHandles);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
-    return ORBIS_OK;
+    if (!aOutHandle && maxHandles != 0) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    const auto count = std::min<u32>(maxHandles, static_cast<u32>(system->second.racks.size()));
+    std::copy_n(system->second.racks.begin(), count, aOutHandle);
+    return static_cast<s32>(count);
 }
 
 s32 PS4_SYSV_ABI sceNgs2SystemGetInfo(OrbisNgs2Handle rackHandle, OrbisNgs2SystemInfo* outInfo,
                                       size_t infoSize) {
-    LOG_ERROR(Lib_Ngs2, "infoSize = {}", infoSize);
+    LOG_DEBUG(Lib_Ngs2, "infoSize = {}", infoSize);
+    if (!rackHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    if (infoSize < sizeof(OrbisNgs2SystemInfo)) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_SIZE;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto system = g_systems.find(rackHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    FillSystemInfo(system->second, outInfo, infoSize);
     return ORBIS_OK;
 }
 
@@ -219,7 +846,16 @@ s32 PS4_SYSV_ABI sceNgs2SystemGetUserData(OrbisNgs2Handle systemHandle, uintptr_
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
-    LOG_ERROR(Lib_Ngs2, "called");
+    if (!outUserData) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    *outUserData = system->second.userData;
+    LOG_DEBUG(Lib_Ngs2, "called");
     return ORBIS_OK;
 }
 
@@ -249,11 +885,25 @@ s32 PS4_SYSV_ABI sceNgs2SystemQueryBufferSize(const OrbisNgs2SystemOption* optio
 s32 PS4_SYSV_ABI sceNgs2SystemRender(OrbisNgs2Handle systemHandle,
                                      const OrbisNgs2RenderBufferInfo* aBufferInfo,
                                      u32 numBufferInfo) {
-    LOG_DEBUG(Lib_Ngs2, "(STUBBED) numBufferInfo = {}", numBufferInfo);
+    LOG_DEBUG(Lib_Ngs2, "numBufferInfo = {}", numBufferInfo);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    {
+        std::scoped_lock lock{g_state_mutex};
+        auto system = g_systems.find(systemHandle);
+        if (system == g_systems.end()) {
+            return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+        }
+        ++system->second.renderCount;
+        for (const auto rackHandle : system->second.racks) {
+            if (auto rack = g_racks.find(rackHandle); rack != g_racks.end()) {
+                ++rack->second.renderCount;
+            }
+        }
+    }
+    ZeroRenderBuffers(aBufferInfo, numBufferInfo);
     return ORBIS_OK;
 }
 
@@ -272,29 +922,47 @@ static s32 PS4_SYSV_ABI sceNgs2SystemResetOption(OrbisNgs2SystemOption* outOptio
 }
 
 s32 PS4_SYSV_ABI sceNgs2SystemSetGrainSamples(OrbisNgs2Handle systemHandle, u32 numSamples) {
-    LOG_ERROR(Lib_Ngs2, "numSamples = {}", numSamples);
+    LOG_DEBUG(Lib_Ngs2, "numSamples = {}", numSamples);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    std::scoped_lock lock{g_state_mutex};
+    auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    system->second.numGrainSamples = numSamples;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2SystemSetSampleRate(OrbisNgs2Handle systemHandle, u32 sampleRate) {
-    LOG_ERROR(Lib_Ngs2, "sampleRate = {}", sampleRate);
+    LOG_DEBUG(Lib_Ngs2, "sampleRate = {}", sampleRate);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    std::scoped_lock lock{g_state_mutex};
+    auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    system->second.sampleRate = sampleRate;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2SystemSetUserData(OrbisNgs2Handle systemHandle, uintptr_t userData) {
-    LOG_ERROR(Lib_Ngs2, "userData = {}", userData);
+    LOG_DEBUG(Lib_Ngs2, "userData = {}", userData);
     if (!systemHandle) {
         LOG_ERROR(Lib_Ngs2, "systemHandle is nullptr");
         return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     }
+    std::scoped_lock lock{g_state_mutex};
+    auto system = g_systems.find(systemHandle);
+    if (system == g_systems.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+    }
+    system->second.userData = userData;
     return ORBIS_OK;
 }
 
@@ -309,36 +977,137 @@ s32 PS4_SYSV_ABI sceNgs2SystemUnlock(OrbisNgs2Handle systemHandle) {
 
 s32 PS4_SYSV_ABI sceNgs2VoiceControl(OrbisNgs2Handle voiceHandle,
                                      const OrbisNgs2VoiceParamHeader* paramList) {
-    LOG_ERROR(Lib_Ngs2, "called");
+    LOG_DEBUG(Lib_Ngs2, "called");
+    if (!voiceHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    if (!paramList) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_CONTROL_ADDRESS;
+    }
+    TraceVoiceParams(voiceHandle, paramList);
+    std::scoped_lock lock{g_state_mutex};
+    auto voice = g_voices.find(voiceHandle);
+    if (voice == g_voices.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    ++voice->second.controlCount;
+    ApplyVoiceParams(voice->second, paramList);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2VoiceGetMatrixInfo(OrbisNgs2Handle voiceHandle, u32 matrixId,
                                            OrbisNgs2VoiceMatrixInfo* outInfo, size_t outInfoSize) {
-    LOG_ERROR(Lib_Ngs2, "matrixId = {}, outInfoSize = {}", matrixId, outInfoSize);
+    LOG_DEBUG(Lib_Ngs2, "matrixId = {}, outInfoSize = {}", matrixId, outInfoSize);
+    if (!voiceHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    if (outInfoSize < sizeof(OrbisNgs2VoiceMatrixInfo)) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_SIZE;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto voice = g_voices.find(voiceHandle);
+    if (voice == g_voices.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    std::memset(outInfo, 0, outInfoSize);
+    if (matrixId < voice->second.matrices.size()) {
+        *outInfo = voice->second.matrices[matrixId];
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2VoiceGetOwner(OrbisNgs2Handle voiceHandle, OrbisNgs2Handle* outRackHandle,
                                       u32* outVoiceId) {
-    LOG_ERROR(Lib_Ngs2, "called");
+    LOG_DEBUG(Lib_Ngs2, "called");
+    if (!voiceHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    if (!outRackHandle || !outVoiceId) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto voice = g_voices.find(voiceHandle);
+    if (voice == g_voices.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    *outRackHandle = voice->second.rackHandle;
+    *outVoiceId = voice->second.voiceIndex;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2VoiceGetPortInfo(OrbisNgs2Handle voiceHandle, u32 port,
                                          OrbisNgs2VoicePortInfo* outInfo, size_t outInfoSize) {
-    LOG_ERROR(Lib_Ngs2, "port = {}, outInfoSize = {}", port, outInfoSize);
+    LOG_DEBUG(Lib_Ngs2, "port = {}, outInfoSize = {}", port, outInfoSize);
+    if (!voiceHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    if (outInfoSize < sizeof(OrbisNgs2VoicePortInfo)) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_SIZE;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto voice = g_voices.find(voiceHandle);
+    if (voice == g_voices.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    std::memset(outInfo, 0, outInfoSize);
+    if (port < voice->second.ports.size()) {
+        *outInfo = voice->second.ports[port];
+    } else {
+        outInfo->volume = 1.0f;
+        outInfo->matrixId = -1;
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2VoiceGetState(OrbisNgs2Handle voiceHandle, OrbisNgs2VoiceState* outState,
                                       size_t stateSize) {
-    LOG_ERROR(Lib_Ngs2, "stateSize = {}", stateSize);
+    LOG_DEBUG(Lib_Ngs2, "stateSize = {}", stateSize);
+    if (!voiceHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    if (!outState) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    if (stateSize < sizeof(OrbisNgs2VoiceState)) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_SIZE;
+    }
+    std::memset(outState, 0, stateSize);
+    std::scoped_lock lock{g_state_mutex};
+    const auto voice = g_voices.find(voiceHandle);
+    if (voice == g_voices.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    outState->stateFlags = voice->second.stateFlags;
+    if (stateSize >= sizeof(OrbisNgs2CustomSamplerVoiceState)) {
+        auto* custom_state = reinterpret_cast<OrbisNgs2CustomSamplerVoiceState*>(outState);
+        custom_state->waveformData = voice->second.waveformData;
+        custom_state->numDecodedSamples = voice->second.decodedSamples;
+        custom_state->decodedDataSize = voice->second.decodedDataSize;
+        custom_state->userData = voice->second.callbackData;
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2VoiceGetStateFlags(OrbisNgs2Handle voiceHandle, u32* outStateFlags) {
-    LOG_ERROR(Lib_Ngs2, "called");
+    LOG_DEBUG(Lib_Ngs2, "called");
+    if (!voiceHandle) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    if (!outStateFlags) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    std::scoped_lock lock{g_state_mutex};
+    const auto voice = g_voices.find(voiceHandle);
+    if (voice == g_voices.end()) {
+        return ORBIS_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    }
+    *outStateFlags = voice->second.stateFlags;
     return ORBIS_OK;
 }
 
