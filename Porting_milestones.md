@@ -20,12 +20,12 @@ keeping the emulator runnable after every slice.
 | Launch directory validation | `src/launch_cli.cpp` | `elisa/src/launch_intent.elisa` | ported | Elisa validates `--override-root`, `--add-game-folder`, and `--set-addon-folder` through a small filesystem C ABI. |
 | Root main dispatch | `src/main.cpp` | `elisa/src/shadps4_main.elisa` | ported | C++ `main.cpp` is now a platform trampoline in Elisa-enabled builds. Elisa decides no-args, help, parse-error, and normal-run flow. |
 | macOS debugger wait helper | `core/debugger.*` path usage | `elisa/src/debugger.elisa` | ported | Elisa-backed wait path is used by the launch pipeline in Elisa-enabled builds, with platform-specific native helpers. |
+| Launch pipeline orchestration | `src/launch_pipeline.cpp` | `elisa/src/launch_pipeline.elisa`, `src/launch_elisa_main_bridge.cpp` | ported | Elisa-enabled builds now own wait/init/utility/flag/resolve/run sequencing; C++ exposes narrow host operations and remains as the non-Elisa fallback. |
 
 ## Wrapped Or Shadowed
 
 | Area | C++ Source | Elisa/C ABI Surface | Status | Notes |
 | --- | --- | --- | --- | --- |
-| Launch execution pipeline | `src/launch_pipeline.cpp` | `elisa/src/launch_pipeline.elisa`, `src/launch_elisa_main_bridge.cpp` | wrapped | Elisa now owns the `LaunchPipeline::run_parsed_launch` module boundary and calls a narrow host bridge; C++ still owns runtime settings, utility commands, game resolution, and emulator start. |
 | C ABI packaging | `CMakeLists.txt`, `cmake/Elisa.cmake` | `-emit c-archive` targets | ported | Elisa modules build as static archives with checked-in ABI headers and sidecar manifests. |
 | Launch intent smoke/shadow tests | `elisa/native/launch_intent_smoke.cpp` | `elisa/src/launch_intent.elisa` | shadowed | Smoke compares normalized launch intent behavior without changing non-Elisa runtime behavior. |
 
@@ -44,9 +44,8 @@ keeping the emulator runnable after every slice.
 
 | Area | C++ Source | Proposed Elisa Module | Status | Why It Is A Good Candidate |
 | --- | --- | --- | --- | --- |
-| Launch pipeline orchestration | `src/launch_pipeline.cpp` | `elisa/src/launch_pipeline.elisa` | planned | Mostly decision flow around already-parsed launch intent; good fit for module syntax and permissions. |
-| Runtime settings launch flag policy | `src/launch_pipeline.cpp` | `LaunchPipeline::apply_launch_flags` | planned | Small branchy logic; effectful setters can remain native externs at first. |
-| Utility command routing | `src/launch_pipeline.cpp` | `LaunchPipeline::handle_utility_command` | planned | Simple command selection; native calls can stay wrapped. |
+| Runtime settings internals | `src/launch_pipeline.cpp`, settings classes | `LaunchPipeline` host externs | planned | The orchestration is ported; settings storage/loading still lives in C++ and should stay wrapped until Elisa has enough filesystem/config support. |
+| Utility command side effects | `src/launch_pipeline.cpp`, BigPicture/settings | `LaunchPipeline` host externs | planned | Routing is ported; Big Picture launch and settings persistence remain native side effects. |
 | Game path normalization | `src/launch_pipeline.cpp` | `LaunchPipeline::normalize_game_path_and_args` | planned | Mostly pure argument policy with clear error cases. |
 | Game checklist/update harness | manual testing workflow | `elisa/src/game_checklist.elisa` or fixtures | planned | Keeps compatibility discoveries structured as we dogfood. |
 

@@ -11,65 +11,17 @@
 #include <utility>
 #include <vector>
 
+#include <core/emulator_settings.h>
+
 #include "common/logging/log.h"
+#include "common/memory_patcher.h"
+#include "core/file_sys/fs.h"
 #include "elisa/native/shadps4_elisa_launch_intent.h"
 
 namespace {
 
 const char* ElisaString(uint8_t* value) {
     return value != nullptr ? reinterpret_cast<const char*>(value) : "";
-}
-
-LaunchIntent::CliState BuildCliState(const ShadLaunchIntentCABI& intent, int64_t argc,
-                                     uint8_t** argv) {
-    LaunchIntent::CliState state{};
-
-    if (intent.kind == LaunchIntent::ElisaIntentBigPicture) {
-        state.big_picture = true;
-    } else if (intent.kind == LaunchIntent::ElisaIntentAddGameFolder) {
-        state.add_game_folder = std::filesystem::path(ElisaString(intent.add_game_folder));
-    } else if (intent.kind == LaunchIntent::ElisaIntentSetAddonFolder) {
-        state.set_addon_folder = std::filesystem::path(ElisaString(intent.set_addon_folder));
-    } else if (std::strcmp(ElisaString(intent.game_path), "") != 0) {
-        state.game_path = ElisaString(intent.game_path);
-    }
-
-    if (intent.game_arg_count > 0) {
-        state.game_args = {"--"};
-        for (int64_t i = 0; i < intent.game_arg_count; ++i) {
-            const auto argv_index = intent.game_arg_start_index + i;
-            if (argv_index >= 0 && argv_index < argc) {
-                state.game_args.emplace_back(
-                    reinterpret_cast<const char*>(argv[static_cast<size_t>(argv_index)]));
-            }
-        }
-    }
-    if (std::strcmp(ElisaString(intent.patch_file), "") != 0) {
-        state.patch_file = ElisaString(intent.patch_file);
-    }
-    if (std::strcmp(ElisaString(intent.override_root), "") != 0) {
-        state.override_root = std::filesystem::path(ElisaString(intent.override_root));
-    }
-    if (intent.fullscreen == LaunchIntent::ElisaFullscreenTrue) {
-        state.fullscreen = "true";
-    } else if (intent.fullscreen == LaunchIntent::ElisaFullscreenFalse) {
-        state.fullscreen = "false";
-    }
-    if (intent.config_mode == LaunchIntent::ElisaConfigClean) {
-        state.config_clean = true;
-    } else if (intent.config_mode == LaunchIntent::ElisaConfigGlobal) {
-        state.config_global = true;
-    }
-    if (intent.has_wait_pid) {
-        state.wait_pid = static_cast<int>(intent.wait_pid);
-    }
-
-    state.ignore_game_patch = static_cast<bool>(intent.ignore_game_patch);
-    state.show_fps = static_cast<bool>(intent.show_fps);
-    state.log_append = static_cast<bool>(intent.log_append);
-    state.wait_for_debugger = static_cast<bool>(intent.wait_for_debugger);
-    Common::Log::g_should_append = state.log_append;
-    return state;
 }
 
 } // namespace
@@ -124,11 +76,100 @@ extern "C" intptr_t shadps4_elisa_main_report_error(ShadLaunchIntentCABI* intent
     return static_cast<int>(intent->exit_code);
 }
 
-extern "C" intptr_t shadps4_elisa_main_run(uint8_t* executable_name, int64_t argc,
-                                           uint8_t** argv, ShadLaunchIntentCABI* intent) {
-    if (intent == nullptr || argc < 0) {
+extern "C" intptr_t shadps4_elisa_pipeline_set_log_append() {
+    Common::Log::g_should_append = true;
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_initialize_runtime_settings() {
+    LaunchPipeline::InitializeRuntimeSettings();
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_big_picture(uint8_t* executable_name) {
+    LaunchPipeline::HandleUtilityCommand(true, reinterpret_cast<char*>(executable_name), std::nullopt,
+                                         std::nullopt);
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_add_game_folder(uint8_t* path) {
+    return LaunchPipeline::HandleUtilityCommand(false, nullptr,
+                                                std::filesystem::path(ElisaString(path)),
+                                                std::nullopt)
+               ? 1
+               : 0;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_set_addon_folder(uint8_t* path) {
+    return LaunchPipeline::HandleUtilityCommand(false, nullptr, std::nullopt,
+                                                std::filesystem::path(ElisaString(path)))
+               ? 1
+               : 0;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_set_patch_file(uint8_t* path) {
+    MemoryPatcher::patch_file = ElisaString(path);
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_set_ignore_game_patch() {
+    Core::FileSys::MntPoints::ignore_game_patches = true;
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_set_fullscreen(intptr_t enabled) {
+    EmulatorSettings.SetFullScreen(enabled != 0);
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_set_show_fps() {
+    EmulatorSettings.SetShowFpsCounter(true);
+    return 1;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_set_config_mode(int64_t mode) {
+    if (mode == LaunchIntent::ElisaConfigClean) {
+        EmulatorSettings.SetConfigMode(ConfigMode::Clean);
         return 1;
     }
-    auto state = BuildCliState(*intent, argc, argv);
-    return LaunchPipeline::RunParsedLaunch(ElisaString(executable_name), std::move(state));
+    if (mode == LaunchIntent::ElisaConfigGlobal) {
+        EmulatorSettings.SetConfigMode(ConfigMode::Global);
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" intptr_t shadps4_elisa_pipeline_resolve_and_run(uint8_t* executable_name,
+                                                           intptr_t wait_for_debugger,
+                                                           uint8_t* game_path, int64_t argc,
+                                                           uint8_t** argv,
+                                                           int64_t game_arg_start_index,
+                                                           int64_t game_arg_count,
+                                                           uint8_t* override_root) {
+    if (argc < 0 || game_arg_count < 0) {
+        return 1;
+    }
+
+    const auto eboot_path = LaunchPipeline::ResolveGamePathOrId(ElisaString(game_path));
+    if (!eboot_path) {
+        return 1;
+    }
+
+    std::vector<std::string> game_args;
+    game_args.reserve(static_cast<size_t>(game_arg_count));
+    for (int64_t i = 0; i < game_arg_count; ++i) {
+        const auto argv_index = game_arg_start_index + i;
+        if (argv_index >= 0 && argv_index < argc) {
+            game_args.emplace_back(reinterpret_cast<const char*>(argv[static_cast<size_t>(argv_index)]));
+        }
+    }
+
+    std::optional<std::filesystem::path> override_path;
+    if (std::strcmp(ElisaString(override_root), "") != 0) {
+        override_path = std::filesystem::path(ElisaString(override_root));
+    }
+
+    LaunchPipeline::RunEmulator(ElisaString(executable_name), wait_for_debugger != 0, *eboot_path,
+                                game_args, override_path);
+    return 0;
 }

@@ -9,7 +9,7 @@ extern shadps4_elisa_main_no_args(argc: i64, argv: u8&&) -> int can[LaunchNative
 extern shadps4_elisa_main_help(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, HostMain.Help]
 extern shadps4_elisa_main_report_error(intent: mutable ShadLaunchIntentCABI&) -> int can[LaunchNative.FFI, HostMain.ReportError]
 
-def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, LaunchFS.Read, HostMain.NoArgs, HostMain.Help, HostMain.ReportError, HostLaunchPipeline.Run]:
+def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, LaunchFS.Read, HostMain.NoArgs, HostMain.Help, HostMain.ReportError, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.StartEmulator]:
     intent: mutable ShadLaunchIntentFFI = zeroed
     can LaunchNative.FFI, LaunchFS.Read:
         if shadps4_elisa_parse_launch_intent_impl(argc, argv, intent.ref[mutable ShadLaunchIntentFFI&]) == 0:
@@ -27,7 +27,7 @@ def shadps4_elisa_main_impl(argc: i64, argv: u8&&) -> int can[LaunchNative.FFI, 
         can LaunchNative.FFI, HostMain.ReportError:
             return shadps4_elisa_main_report_error(intent.ref[mutable ShadLaunchIntentCABI&])
 
-    can LaunchNative.FFI, HostLaunchPipeline.Run:
+    can LaunchNative.FFI, HostLaunchPipeline.WaitForPid, HostLaunchPipeline.Settings, HostLaunchPipeline.UtilityCommand, HostLaunchPipeline.LaunchFlags, HostLaunchPipeline.StartEmulator:
         return LaunchPipeline::run_parsed_launch(intent.executable_name, argc, argv, intent.ref[mutable ShadLaunchIntentCABI&])
 
 export func shadps4_elisa_main(argc: i64, argv: u8&&) -> int = shadps4_elisa_main_impl
