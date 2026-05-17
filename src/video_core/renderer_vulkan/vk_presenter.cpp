@@ -1018,6 +1018,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     frame->image_view = view;
     frame->width = width;
     frame->height = height;
+    frame->format = format;
 
     frame->imgui_texture = ImGui::Vulkan::AddTexture(view, vk::ImageLayout::eShaderReadOnlyOptimal);
     frame->is_hdr = swapchain.GetHDR();
@@ -1100,6 +1101,16 @@ static vk::Format GetFrameViewFormat(const Libraries::VideoOut::PixelFormat form
     case Libraries::VideoOut::PixelFormat::A2R10G10B10:
     case Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb:
     case Libraries::VideoOut::PixelFormat::A2R10G10B10Bt2020Pq:
+        if (Common::Trace::EnvEnabled("SHADPS4_VIDEOOUT_VIEW_MATCH_IMAGE_FORMAT")) {
+            static bool logged = false;
+            if (!logged) {
+                LOG_WARNING(Render_Vulkan,
+                            "SHADPS4_VIDEOOUT_VIEW_MATCH_IMAGE_FORMAT=1: using A2B10G10R10 "
+                            "VideoOut view format instead of A2R10G10B10");
+                logged = true;
+            }
+            return vk::Format::eA2B10G10R10UnormPack32;
+        }
         return vk::Format::eA2R10G10B10UnormPack32;
     case Libraries::VideoOut::PixelFormat::A16R16G16B16Float:
         return vk::Format::eR16G16B16A16Sfloat;
@@ -1518,14 +1529,14 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
         if (black_watchdog_enabled) {
             pending_screenshots.emplace_back(instance, scheduler, ScreenshotKind::FrameImage,
                                              std::vector<std::filesystem::path>{}, frame->width,
-                                             frame->height, swapchain.GetCurrentImageFormat(),
-                                             frame->is_hdr, watchdog_context, true);
+                                             frame->height, frame->format, frame->is_hdr,
+                                             watchdog_context, true);
             auto& readback = pending_screenshots.back();
 
             const vk::ImageMemoryBarrier frame_to_transfer{
-                .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .srcAccessMask = vk::AccessFlagBits::eShaderRead,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 .newLayout = vk::ImageLayout::eTransferSrcOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1546,9 +1557,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
 
             const vk::ImageMemoryBarrier frame_to_general{
                 .srcAccessMask = vk::AccessFlagBits::eTransferRead,
-                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
                 .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = frame->image,
@@ -1561,42 +1572,24 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
                 },
             };
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                   vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                   vk::PipelineStageFlagBits::eFragmentShader,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, frame_to_general);
         }
 
-        const std::array pre_barriers{
-            vk::ImageMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eNone,
-                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-                .oldLayout = vk::ImageLayout::eUndefined,
-                .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = swapchain_image,
-                .subresourceRange{
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = VK_REMAINING_ARRAY_LAYERS,
-                },
-            },
-            vk::ImageMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead,
-                .oldLayout = vk::ImageLayout::eGeneral,
-                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = frame->image,
-                .subresourceRange{
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = VK_REMAINING_ARRAY_LAYERS,
-                },
+        const vk::ImageMemoryBarrier pre_barrier{
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = swapchain_image,
+            .subresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = VK_REMAINING_ARRAY_LAYERS,
             },
         };
 
@@ -1604,7 +1597,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
 
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
                                vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, pre_barriers);
+                               vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
 
         { // Draw the game
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0.0f});

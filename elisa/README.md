@@ -53,10 +53,15 @@ The expected report should list only the imported C ABI symbols, not the higher-
 Available profiles are represented in Elisa:
 
 - `baseline-safe`
+- `black-watchdog-strict`
 - `fmask-null-read`
 - `fmask-in-place`
 - `compositor-null-layer`
 - `videoout-unorm`
+
+`black-watchdog-strict` is the preferred UFC black-screen classifier. It enables paired
+GameOnly/FrameImage/WithOverlays evidence and arms the strict watchdog so the run stops once
+the source split proves where the black frame begins.
 
 ## Root-first porting map
 

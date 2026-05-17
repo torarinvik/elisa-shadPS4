@@ -91,6 +91,8 @@ static void shadps4_elisa_apply_trace_env(int null_fmask_reads, int fmask_decomp
     setenv("SHADPS4_TRACE_GPU_COMMANDS", "1", 1);
     setenv("SHADPS4_TRACE_SCREENSHOT_INTERVAL_MS", "3000", 1);
     setenv("SHADPS4_TRACE_SCREENSHOT_GAME_ONLY", "1", 1);
+    setenv("SHADPS4_TRACE_SCREENSHOT_WITH_OVERLAYS", "1", 1);
+    setenv("SHADPS4_TRACE_SCREENSHOT_BOTH", "1", 1);
     setenv("SHADPS4_TRACE_SCREENSHOT_STATS_ONLY", "1", 1);
     setenv("SHADPS4_TRACE_SCREENSHOT_DIR", "./elisa_trace_screenshots", 1);
     setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
@@ -177,6 +179,10 @@ static void shadps4_elisa_profile_flags(const char* profile, int* null_fmask_rea
     } else if (strcmp(profile, "videoout-unorm") == 0) {
         *videoout_unorm = 1;
     }
+}
+
+static int shadps4_elisa_is_black_watchdog_profile(const char* profile) {
+    return profile != NULL && strcmp(profile, "black-watchdog-strict") == 0;
 }
 
 static uint64_t shadps4_elisa_monotonic_ms(void) {
@@ -279,6 +285,12 @@ int shadps4_elisa_start_ufc_trace_flags(const char* root_dir, const char* profil
         chdir(root);
         shadps4_elisa_apply_trace_env(null_fmask_reads, fmask_decompress_in_place,
                                       compositor_null_layer, videoout_unorm);
+        if (shadps4_elisa_is_black_watchdog_profile(chosen_profile)) {
+            setenv("SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG", "1", 1);
+            setenv("SHADPS4_BLACK_WATCHDOG_ARMED", "1", 1);
+            setenv("SHADPS4_BLACK_WATCHDOG_CONSECUTIVE_FRAMES", "2", 1);
+            setenv("SHADPS4_TRACE_VIDEO_OUT_EVERY", "1", 1);
+        }
         shadps4_elisa_warn_stale_build_cache();
         const char* binary_path = shadps4_elisa_select_binary();
         fprintf(stderr, "ELISA_TRACE binary_path=%s\n", binary_path);
@@ -462,7 +474,7 @@ static char* shadps4_elisa_filter_trace_log(char* input, size_t input_size, size
     const char* header = "ELISA_TRACE log_filter mode=render-evidence\n";
     const size_t header_len = strlen(header);
     const size_t footer_cap = 96;
-    char* output = (char*)malloc(input_size + header_len + footer_cap + 1);
+    char* output = (char*)malloc(input_size + header_len + footer_cap + 2);
     if (output == NULL) {
         return NULL;
     }
@@ -522,6 +534,7 @@ const char* shadps4_elisa_read_file(const char* path) {
         return "";
     }
     free(shadps4_elisa_file_buffer);
+    shadps4_elisa_file_buffer = NULL;
     if (fseek(file, 0, SEEK_SET) != 0) {
         fclose(file);
         shadps4_elisa_set_error("failed to seek trace");

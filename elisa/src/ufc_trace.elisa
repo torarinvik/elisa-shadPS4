@@ -297,6 +297,9 @@ def baseline_safe_profile() -> TraceProfile:
 def existing_log_profile() -> TraceProfile:
     return TraceProfile("existing-log", 0, false, false, false, false)
 
+def black_watchdog_strict_profile() -> TraceProfile:
+    return TraceProfile("black-watchdog-strict", 8000, false, false, false, false)
+
 def fmask_null_read_profile() -> TraceProfile:
     return TraceProfile("fmask-null-read", 8000, true, false, false, false)
 

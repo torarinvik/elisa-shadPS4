@@ -55,16 +55,22 @@ static void StartAutoScreenshotThread() {
         return;
     }
 
+    const bool both = IsEnvEnabled("SHADPS4_TRACE_SCREENSHOT_BOTH");
     const bool game_only = IsEnvEnabled("SHADPS4_TRACE_SCREENSHOT_GAME_ONLY");
     LOG_INFO(Render, "Trace screenshots enabled: interval={}ms kind={}", interval_ms,
-             game_only ? "game-only" : "with-overlays");
+             both ? "game-only+with-overlays" : (game_only ? "game-only" : "with-overlays"));
 
-    std::thread([interval_ms, game_only] {
+    std::thread([interval_ms, game_only, both] {
         const auto interval = std::chrono::milliseconds(interval_ms);
         while (true) {
             std::this_thread::sleep_for(interval);
-            RequestScreenshot(game_only ? ScreenshotRequest::GameOnly
-                                        : ScreenshotRequest::WithOverlays);
+            if (both) {
+                RequestScreenshot(ScreenshotRequest::GameOnly);
+                RequestScreenshot(ScreenshotRequest::WithOverlays);
+            } else {
+                RequestScreenshot(game_only ? ScreenshotRequest::GameOnly
+                                            : ScreenshotRequest::WithOverlays);
+            }
         }
     }).detach();
 }

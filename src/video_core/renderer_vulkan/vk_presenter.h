@@ -28,6 +28,7 @@ namespace Vulkan {
 struct Frame {
     u32 width{};
     u32 height{};
+    vk::Format format{};
     VmaAllocation allocation{};
     vk::Image image{};
     vk::ImageView image_view{};

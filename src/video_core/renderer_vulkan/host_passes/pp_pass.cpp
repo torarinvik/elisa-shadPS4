@@ -21,6 +21,11 @@ static bool IsStrictRenderValidationEnabled() {
     return enabled;
 }
 
+static bool ShouldForcePostProcessColor() {
+    static const bool enabled = Common::Trace::EnvEnabled("SHADPS4_FORCE_PP_COLOR");
+    return enabled;
+}
+
 void PostProcessingPass::Create(vk::Device device, const vk::Format surface_format) {
     static const std::array pp_shaders{
         HostShaders::FS_TRI_VERT,
@@ -223,6 +228,8 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
             .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .loadOp = vk::AttachmentLoadOp::eClear,
             .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue = vk::ClearValue{
+                vk::ClearColorValue{std::array<float, 4>{1.0f, 0.0f, 1.0f, 1.0f}}},
         },
     }};
     const vk::RenderingInfo rendering_info{
@@ -236,6 +243,37 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
         .colorAttachmentCount = attachments.size(),
         .pColorAttachments = attachments.data(),
     };
+
+    if (ShouldForcePostProcessColor()) {
+        static bool logged = false;
+        if (!logged) {
+            LOG_WARNING(Render_Vulkan,
+                        "SHADPS4_FORCE_PP_COLOR=1: post-process pass will clear the frame to "
+                        "magenta and skip sampling the game image");
+            logged = true;
+        }
+        cmdbuf.beginRendering(rendering_info);
+        cmdbuf.endRendering();
+
+        const auto post_barrier = vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+            .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .image = frame.image,
+            .subresourceRange = simple_subresource,
+        };
+        cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &post_barrier,
+        });
+        if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+            cmdbuf.endDebugUtilsLabelEXT();
+        }
+        return;
+    }
 
     vk::DescriptorImageInfo image_info{
         .sampler = *sampler,
@@ -287,7 +325,7 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
         .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
         .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .newLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
         .image = frame.image,
         .subresourceRange = simple_subresource,
     };
