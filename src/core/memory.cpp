@@ -255,6 +255,22 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     return true;
 }
 
+bool MemoryManager::TryWriteGuestMemory(void* address, const void* data, u64 size) {
+    if (size == 0) {
+        return true;
+    }
+
+    const VAddr original_addr = std::bit_cast<VAddr>(address);
+    std::shared_lock lk{mutex};
+    const VAddr virtual_addr = ResolveRelocatedAddress(original_addr);
+    if (!IsValidMapping(virtual_addr, size)) {
+        return false;
+    }
+
+    std::memcpy(std::bit_cast<void*>(virtual_addr), data, size);
+    return true;
+}
+
 PAddr MemoryManager::PoolExpand(PAddr search_start, PAddr search_end, u64 size, u64 alignment) {
     std::scoped_lock lk{mutex, unmap_mutex};
     alignment = alignment > 0 ? alignment : 64_KB;

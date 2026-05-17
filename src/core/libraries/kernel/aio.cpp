@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 #include "aio.h"
@@ -14,10 +16,28 @@
 
 namespace Libraries::Kernel {
 
-#define MAX_QUEUE 512
+constexpr s32 MaxQueue = 512;
 
 static s32* id_state;
 static s32 id_index;
+
+static bool TracePakIoEnabled() {
+    static const bool enabled = std::getenv("SHADPS4_TRACE_PAK_IO") != nullptr;
+    return enabled;
+}
+
+static bool IsValidSubmitId(OrbisKernelAioSubmitId id) {
+    return id > 0 && id < MaxQueue;
+}
+
+static OrbisKernelAioSubmitId NextSubmitId() {
+    const OrbisKernelAioSubmitId id = id_index;
+    id_index = (id_index + 1) % MaxQueue;
+    if (id_index == 0) {
+        id_index = 1;
+    }
+    return id;
+}
 
 s32 PS4_SYSV_ABI sceKernelAioInitializeImpl(void* p, s32 size) {
 
@@ -27,6 +47,9 @@ s32 PS4_SYSV_ABI sceKernelAioInitializeImpl(void* p, s32 size) {
 s32 PS4_SYSV_ABI sceKernelAioDeleteRequest(OrbisKernelAioSubmitId id, s32* ret) {
     if (ret == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    if (!IsValidSubmitId(id)) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
     }
     id_state[id] = ORBIS_KERNEL_AIO_STATE_ABORTED;
     *ret = 0;
@@ -38,6 +61,10 @@ s32 PS4_SYSV_ABI sceKernelAioDeleteRequests(OrbisKernelAioSubmitId id[], s32 num
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
     for (s32 i = 0; i < num; i++) {
+        if (!IsValidSubmitId(id[i])) {
+            ret[i] = ORBIS_KERNEL_ERROR_EINVAL;
+            continue;
+        }
         id_state[id[i]] = ORBIS_KERNEL_AIO_STATE_ABORTED;
         ret[i] = 0;
     }
@@ -48,6 +75,9 @@ s32 PS4_SYSV_ABI sceKernelAioPollRequest(OrbisKernelAioSubmitId id, s32* state) 
     if (state == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
+    if (!IsValidSubmitId(id)) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
     *state = id_state[id];
     return 0;
 }
@@ -57,6 +87,10 @@ s32 PS4_SYSV_ABI sceKernelAioPollRequests(OrbisKernelAioSubmitId id[], s32 num, 
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
     for (s32 i = 0; i < num; i++) {
+        if (!IsValidSubmitId(id[i])) {
+            state[i] = ORBIS_KERNEL_AIO_STATE_ABORTED;
+            continue;
+        }
         state[i] = id_state[id[i]];
     }
 
@@ -67,7 +101,7 @@ s32 PS4_SYSV_ABI sceKernelAioCancelRequest(OrbisKernelAioSubmitId id, s32* state
     if (state == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
-    if (id) {
+    if (IsValidSubmitId(id)) {
         id_state[id] = ORBIS_KERNEL_AIO_STATE_ABORTED;
         *state = ORBIS_KERNEL_AIO_STATE_ABORTED;
     } else {
@@ -81,7 +115,7 @@ s32 PS4_SYSV_ABI sceKernelAioCancelRequests(OrbisKernelAioSubmitId id[], s32 num
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
     for (s32 i = 0; i < num; i++) {
-        if (id[i]) {
+        if (IsValidSubmitId(id[i])) {
             id_state[id[i]] = ORBIS_KERNEL_AIO_STATE_ABORTED;
             state[i] = ORBIS_KERNEL_AIO_STATE_ABORTED;
         } else {
@@ -96,6 +130,9 @@ s32 PS4_SYSV_ABI sceKernelAioWaitRequest(OrbisKernelAioSubmitId id, s32* state, 
     if (state == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
+    if (!IsValidSubmitId(id)) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
     u32 timer = 0;
 
     s32 timeout = 0;
@@ -104,7 +141,7 @@ s32 PS4_SYSV_ABI sceKernelAioWaitRequest(OrbisKernelAioSubmitId id, s32* state, 
         sceKernelUsleep(10);
 
         timer += 10;
-        if (*usec) {
+        if (usec != nullptr && *usec) {
             if (timer > *usec) {
                 timeout = 1;
                 break;
@@ -129,12 +166,16 @@ s32 PS4_SYSV_ABI sceKernelAioWaitRequests(OrbisKernelAioSubmitId id[], s32 num, 
     s32 completion = 0;
 
     for (s32 i = 0; i < num; i++) {
+        if (!IsValidSubmitId(id[i])) {
+            state[i] = ORBIS_KERNEL_AIO_STATE_ABORTED;
+            continue;
+        }
         if (!completion && !timeout) {
             while (id_state[id[i]] == ORBIS_KERNEL_AIO_STATE_PROCESSING) {
                 sceKernelUsleep(10);
                 timer += 10;
 
-                if (*usec) {
+                if (usec != nullptr && *usec) {
                     if (timer > *usec) {
                         timeout = 1;
                         break;
@@ -165,9 +206,23 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitReadCommands(OrbisKernelAioRWRequest req[], s
     if (id == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
-    id_state[id_index] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
+    if (size < 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+
+    const OrbisKernelAioSubmitId submit_id = NextSubmitId();
+    id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
 
     for (s32 i = 0; i < size; i++) {
+        if (req[i].result == nullptr) {
+            id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_ABORTED;
+            return ORBIS_KERNEL_ERROR_EFAULT;
+        }
+        if (TracePakIoEnabled()) {
+            LOG_INFO(Kernel, "aio read: submit_id={} req={} fd={} offset={} nbyte={} buf={} result={}",
+                     submit_id, i, req[i].fd, req[i].offset, req[i].nbyte, req[i].buf,
+                     static_cast<void*>(req[i].result));
+        }
 
         s64 ret = sceKernelPread(req[i].fd, req[i].buf, req[i].nbyte, req[i].offset);
 
@@ -181,14 +236,8 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitReadCommands(OrbisKernelAioRWRequest req[], s
         }
     }
 
-    id_state[id_index] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
-
-    *id = id_index;
-
-    id_index = (id_index + 1) % MAX_QUEUE;
-
-    if (!id_index)
-        id_index++;
+    id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
+    *id = submit_id;
 
     return 0;
 }
@@ -201,8 +250,20 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitReadCommandsMultiple(OrbisKernelAioRWRequest 
     if (id == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
+    if (size < 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
     for (s32 i = 0; i < size; i++) {
-        id_state[id_index] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
+        if (req[i].result == nullptr) {
+            return ORBIS_KERNEL_ERROR_EFAULT;
+        }
+        const OrbisKernelAioSubmitId submit_id = NextSubmitId();
+        id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
+        if (TracePakIoEnabled()) {
+            LOG_INFO(Kernel, "aio read multiple: submit_id={} req={} fd={} offset={} nbyte={} buf={} result={}",
+                     submit_id, i, req[i].fd, req[i].offset, req[i].nbyte, req[i].buf,
+                     static_cast<void*>(req[i].result));
+        }
 
         s64 ret = sceKernelPread(req[i].fd, req[i].buf, req[i].nbyte, req[i].offset);
 
@@ -210,21 +271,16 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitReadCommandsMultiple(OrbisKernelAioRWRequest 
             req[i].result->state = ORBIS_KERNEL_AIO_STATE_ABORTED;
             req[i].result->returnValue = ret;
 
-            id_state[id_index] = ORBIS_KERNEL_AIO_STATE_ABORTED;
+            id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_ABORTED;
 
         } else {
             req[i].result->state = ORBIS_KERNEL_AIO_STATE_COMPLETED;
             req[i].result->returnValue = ret;
 
-            id_state[id_index] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
+            id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
         }
 
-        id[i] = id_index;
-
-        id_index = (id_index + 1) % MAX_QUEUE;
-
-        if (!id_index)
-            id_index++;
+        id[i] = submit_id;
     }
 
     return 0;
@@ -238,8 +294,17 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitWriteCommands(OrbisKernelAioRWRequest req[], 
     if (id == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
+    if (size < 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    const OrbisKernelAioSubmitId submit_id = NextSubmitId();
+    id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
+
     for (s32 i = 0; i < size; i++) {
-        id_state[id_index] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
+        if (req[i].result == nullptr) {
+            id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_ABORTED;
+            return ORBIS_KERNEL_ERROR_EFAULT;
+        }
 
         s64 ret = sceKernelPwrite(req[i].fd, req[i].buf, req[i].nbyte, req[i].offset);
 
@@ -247,24 +312,14 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitWriteCommands(OrbisKernelAioRWRequest req[], 
             req[i].result->state = ORBIS_KERNEL_AIO_STATE_ABORTED;
             req[i].result->returnValue = ret;
 
-            id_state[id_index] = ORBIS_KERNEL_AIO_STATE_ABORTED;
-
         } else {
             req[i].result->state = ORBIS_KERNEL_AIO_STATE_COMPLETED;
             req[i].result->returnValue = ret;
-
-            id_state[id_index] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
         }
     }
 
-    *id = id_index;
-
-    id_index = (id_index + 1) % MAX_QUEUE;
-
-    // skip id_index equals 0 , because sceKernelAioCancelRequest will submit id
-    // equal to 0
-    if (!id_index)
-        id_index++;
+    id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
+    *id = submit_id;
 
     return 0;
 }
@@ -277,27 +332,30 @@ s32 PS4_SYSV_ABI sceKernelAioSubmitWriteCommandsMultiple(OrbisKernelAioRWRequest
     if (id == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
+    if (size < 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
     for (s32 i = 0; i < size; i++) {
-        id_state[id_index] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
+        if (req[i].result == nullptr) {
+            return ORBIS_KERNEL_ERROR_EFAULT;
+        }
+        const OrbisKernelAioSubmitId submit_id = NextSubmitId();
+        id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_PROCESSING;
         s64 ret = sceKernelPwrite(req[i].fd, req[i].buf, req[i].nbyte, req[i].offset);
 
         if (ret < 0) {
             req[i].result->state = ORBIS_KERNEL_AIO_STATE_ABORTED;
             req[i].result->returnValue = ret;
 
-            id_state[id_index] = ORBIS_KERNEL_AIO_STATE_ABORTED;
+            id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_ABORTED;
 
         } else {
             req[i].result->state = ORBIS_KERNEL_AIO_STATE_COMPLETED;
             req[i].result->returnValue = ret;
-            id_state[id_index] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
+            id_state[submit_id] = ORBIS_KERNEL_AIO_STATE_COMPLETED;
         }
 
-        id[i] = id_index;
-        id_index = (id_index + 1) % MAX_QUEUE;
-
-        if (!id_index)
-            id_index++;
+        id[i] = submit_id;
     }
     return 0;
 }
@@ -314,8 +372,7 @@ s32 PS4_SYSV_ABI sceKernelAioInitializeParam() {
 
 void RegisterAio(Core::Loader::SymbolsResolver* sym) {
     id_index = 1;
-    id_state = (int*)malloc(sizeof(int) * MAX_QUEUE);
-    memset(id_state, 0, sizeof(sizeof(int) * MAX_QUEUE));
+    id_state = static_cast<s32*>(std::calloc(MaxQueue, sizeof(s32)));
 
     LIB_FUNCTION("fR521KIGgb8", "libkernel", 1, "libkernel", sceKernelAioCancelRequest);
     LIB_FUNCTION("3Lca1XBrQdY", "libkernel", 1, "libkernel", sceKernelAioCancelRequests);

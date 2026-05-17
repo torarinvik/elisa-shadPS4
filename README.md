@@ -128,10 +128,8 @@ modules must be placed in the `sys_modules` folder expected by the current build
 
 ## Contributing
 
-This repository is focused on the Elisa-core port. Please read
-[CONTRIBUTING.md](CONTRIBUTING.md) before sending patches, and make sure changes
-are clearly scoped to this port rather than upstream shadPS4 unless intentionally
-syncing upstream code.
+Anyone can contribute, read the file below for more info.
+[CONTRIBUTING.md](CONTRIBUTING.md) 
 
 When contributing code derived from upstream shadPS4, preserve license headers,
 copyright notices, and attribution.

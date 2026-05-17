@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <map>
 #include <ranges>
+#include <vector>
 #include <magic_enum/magic_enum.hpp>
 
 #include "common/assert.h"
@@ -35,6 +37,7 @@
 #else
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace D = Core::Devices;
@@ -73,6 +76,15 @@ static std::map<std::string, FactoryDevice> available_device = {
 };
 
 namespace Libraries::Kernel {
+
+static bool TracePakIoEnabled() {
+    static const bool enabled = std::getenv("SHADPS4_TRACE_PAK_IO") != nullptr;
+    return enabled;
+}
+
+static bool ShouldTracePakIo(const Core::FileSys::File* file) {
+    return TracePakIoEnabled() && file != nullptr && file->m_guest_name.ends_with(".pak");
+}
 
 s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
@@ -353,12 +365,23 @@ s64 PS4_SYSV_ABI sceKernelWrite(s32 fd, const void* buf, u64 nbytes) {
 }
 
 s64 ReadFile(Common::FS::IOFile& file, void* buf, u64 nbytes) {
-    const auto* memory = Core::Memory::Instance();
-    // Invalidate up to the actual number of bytes that could be read.
-    const auto remaining = file.GetSize() - file.Tell();
-    memory->InvalidateMemory(reinterpret_cast<VAddr>(buf), std::min<u64>(nbytes, remaining));
+    if (nbytes == 0) {
+        return 0;
+    }
 
-    return file.ReadRaw<u8>(buf, nbytes);
+    std::vector<u8> scratch(nbytes);
+    const s64 result = file.ReadRaw<u8>(scratch.data(), scratch.size());
+    if (result <= 0) {
+        return result;
+    }
+
+    auto* memory = Core::Memory::Instance();
+    if (!memory->TryWriteGuestMemory(buf, scratch.data(), result)) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+    memory->InvalidateMemory(reinterpret_cast<VAddr>(buf), result);
+    return result;
 }
 
 s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
@@ -391,9 +414,16 @@ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
         return -1;
     }
 
+    const s64 start_pos = ShouldTracePakIo(file) ? file->f.Tell() : 0;
     s64 total_read = 0;
+    u64 requested_read = 0;
     for (s32 i = 0; i < iovcnt; i++) {
+        requested_read += iov[i].iov_len;
         total_read += ReadFile(file->f, iov[i].iov_base, iov[i].iov_len);
+    }
+    if (ShouldTracePakIo(file)) {
+        LOG_INFO(Kernel_Fs, "pak readv: fd={} path={} pos={} iovcnt={} requested={} bytes={}", fd,
+                 file->m_guest_name, start_pos, iovcnt, requested_read, total_read);
     }
     return total_read;
 }
@@ -556,7 +586,13 @@ s64 PS4_SYSV_ABI read(s32 fd, void* buf, u64 nbytes) {
         return -1;
     }
 
-    return ReadFile(file->f, buf, nbytes);
+    const s64 start_pos = ShouldTracePakIo(file) ? file->f.Tell() : 0;
+    const s64 result = ReadFile(file->f, buf, nbytes);
+    if (ShouldTracePakIo(file)) {
+        LOG_INFO(Kernel_Fs, "pak read: fd={} path={} pos={} requested={} bytes={}", fd,
+                 file->m_guest_name, start_pos, nbytes, result);
+    }
+    return result;
 }
 
 s64 PS4_SYSV_ABI posix_read(s32 fd, void* buf, u64 nbytes) {
@@ -968,6 +1004,51 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
         return -1;
     }
 
+#ifndef _WIN32
+    auto* memory = Core::Memory::Instance();
+    const int host_fd = static_cast<int>(file->f.GetFileMapping());
+    s64 total_read = 0;
+    for (s32 i = 0; i < iovcnt; i++) {
+        std::vector<u8> scratch(iov[i].iov_len);
+        const s64 result = ::pread(host_fd, scratch.data(), scratch.size(), offset + total_read);
+        if (result < 0) {
+            SetPosixErrno(errno);
+            if (ShouldTracePakIo(file)) {
+                LOG_ERROR(Kernel_Fs,
+                          "pak preadv failed: fd={} path={} offset={} iov={} requested={} errno={}",
+                          fd, file->m_guest_name, offset + total_read, i, iov[i].iov_len,
+                          *__Error());
+            }
+            return total_read > 0 ? total_read : -1;
+        }
+        if (result == 0) {
+            break;
+        }
+        if (!memory->TryWriteGuestMemory(iov[i].iov_base, scratch.data(), result)) {
+            *__Error() = POSIX_EFAULT;
+            if (ShouldTracePakIo(file)) {
+                LOG_ERROR(Kernel_Fs,
+                          "pak preadv guest write failed: fd={} path={} dst={} bytes={}", fd,
+                          file->m_guest_name, iov[i].iov_base, result);
+            }
+            return total_read > 0 ? total_read : -1;
+        }
+        memory->InvalidateMemory(reinterpret_cast<VAddr>(iov[i].iov_base), result);
+        total_read += result;
+        if (static_cast<u64>(result) != iov[i].iov_len) {
+            break;
+        }
+    }
+    if (ShouldTracePakIo(file)) {
+        u64 requested_read = 0;
+        for (s32 i = 0; i < iovcnt; i++) {
+            requested_read += iov[i].iov_len;
+        }
+        LOG_INFO(Kernel_Fs, "pak preadv: fd={} path={} offset={} iovcnt={} requested={} bytes={}",
+                 fd, file->m_guest_name, offset, iovcnt, requested_read, total_read);
+    }
+    return total_read;
+#else
     const s64 pos = file->f.Tell();
     SCOPE_EXIT {
         file->f.Seek(pos);
@@ -977,10 +1058,17 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
         return -1;
     }
     s64 total_read = 0;
+    u64 requested_read = 0;
     for (s32 i = 0; i < iovcnt; i++) {
+        requested_read += iov[i].iov_len;
         total_read += ReadFile(file->f, iov[i].iov_base, iov[i].iov_len);
     }
+    if (ShouldTracePakIo(file)) {
+        LOG_INFO(Kernel_Fs, "pak preadv: fd={} path={} offset={} iovcnt={} requested={} bytes={}", fd,
+                 file->m_guest_name, offset, iovcnt, requested_read, total_read);
+    }
     return total_read;
+#endif
 }
 
 s64 PS4_SYSV_ABI sceKernelPreadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
