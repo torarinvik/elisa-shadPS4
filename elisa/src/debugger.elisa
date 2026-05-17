@@ -7,12 +7,14 @@ permission SysProcess:
 permission Clock:
     Sleep
 
-const MACOS_CTL_KERN: int = 1
-const MACOS_KERN_PROC: int = 14
-const MACOS_KERN_PROC_PID: int = 1
-const MACOS_KINFO_PROC_SIZE: u64 = 648
-const MACOS_KINFO_PROC_P_FLAG_OFFSET: usize = 32
-const MACOS_P_TRACED: int = 2048
+
+const module MACOS:
+    CTL_KERN: int = 1
+    KERN_PROC: int = 14
+    KERN_PROC_PID: int = 1
+    KINFO_PROC_SIZE: u64 = 648
+    KINFO_PROC_P_FLAG_OFFSET: usize = 32
+    P_TRACED: int = 2048
 
 static if ELISA_TARGET_OS_POSIX:
     extern getpid() -> int can[Sys.FFI, SysProcess.Poll]
@@ -45,21 +47,21 @@ def shad_debugger_is_debugger_attached() -> bool can[Sys.FFI, SysProcess.Poll]:
     static if ELISA_TARGET_OS_MACOS:
         mib: mutable int[4] = zeroed
         info: mutable u8[648] = zeroed
-        size: mutable u64 = MACOS_KINFO_PROC_SIZE
+        size: mutable u64 = MACOS::KINFO_PROC_SIZE
         result: mutable int = -1
-        mib[0] <- MACOS_CTL_KERN
-        mib[1] <- MACOS_KERN_PROC
-        mib[2] <- MACOS_KERN_PROC_PID
+        mib[0] <- MACOS::CTL_KERN
+        mib[1] <- MACOS::KERN_PROC
+        mib[2] <- MACOS::KERN_PROC_PID
         can Sys.FFI, SysProcess.Poll:
             mib[3] <- getpid()
             result <- sysctl(mib[0].ref[mutable int&], 4, info[0].ref[mutable u8&], size.ref[mutable u64&], 0.uintptr(), 0)
-        if result != 0:
-            return false
+        false return if result != 0
+            
         flags: mutable int = 0
         trusted Unsafe.PointerArithmetic, Unsafe.PointerCast:
-            slot: mutable int& = (info[0].ref[mutable u8&] + MACOS_KINFO_PROC_P_FLAG_OFFSET).cast[mutable int&]
+            slot: mutable int& = (info[0].ref[mutable u8&] + MACOS::KINFO_PROC_P_FLAG_OFFSET).cast[mutable int&]
             flags <- slot[0]
-        return (flags & MACOS_P_TRACED) != 0
+        return (flags & MACOS::P_TRACED) != 0
     static else:
         return false
 
@@ -72,8 +74,8 @@ def shad_debugger_wait_for_pid_exit(pid: int, poll_ms: u32, max_polls: i64) -> i
                 exists <- shad_debugger_process_exists(pid)
             if not exists:
                 return 1
-            if max_polls >= 0 and polls >= max_polls:
-                return 0
+            0 return if max_polls >= 0 and polls >= max_polls
+            
             can Clock.Sleep, Sys.FFI:
                 shad_debugger_sleep_ms(poll_ms)
             polls <- polls + 1

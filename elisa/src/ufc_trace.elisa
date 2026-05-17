@@ -59,14 +59,21 @@ struct TraceResult:
     render: RenderCheckpoint
     error_message: cstr
 
-struct RenderCheckpoint:
+struct RenderPassSummary:
     line_count: mutable i64
     last_videoout_stage: mutable i64
     last_render_pass: mutable i64
     last_depth_pass: mutable i64
-    image_binding_count: mutable i64
     render_target_count: mutable i64
     depth_target_count: mutable i64
+    last_render_samples: mutable i64
+    last_depth_samples: mutable i64
+    last_render_bits: mutable i64
+    last_depth_bits: mutable i64
+    last_render_format_kind: mutable i64
+    last_depth_format_kind: mutable i64
+
+struct MetadataSummary:
     fmask_decompress_count: mutable i64
     metadata_texture_read_count: mutable i64
     fmask_texture_read_count: mutable i64
@@ -74,11 +81,6 @@ struct RenderCheckpoint:
     htile_texture_read_count: mutable i64
     unknown_metadata_read_count: mutable i64
     metadata_register_count: mutable i64
-    image_binding_null_count: mutable i64
-    image_binding_texture_count: mutable i64
-    image_binding_storage_count: mutable i64
-    image_binding_videoout_storage_count: mutable i64
-    compositor_null_layer_count: mutable i64
     fmask_decompress_missing_mrt1_count: mutable i64
     null_metadata_action_count: mutable i64
     sample_metadata_action_count: mutable i64
@@ -91,16 +93,20 @@ struct RenderCheckpoint:
     last_htile_addr: mutable i64
     last_metadata_read_addr: mutable i64
     last_metadata_read_kind: mutable i64
-    last_render_samples: mutable i64
-    last_depth_samples: mutable i64
-    last_render_bits: mutable i64
-    last_depth_bits: mutable i64
-    last_render_format_kind: mutable i64
-    last_depth_format_kind: mutable i64
+
+struct PipelineSummary:
     last_compute_shader: mutable i64
     last_vertex_shader: mutable i64
     last_graphics_pipeline: mutable i64
     last_compute_pipeline: mutable i64
+
+struct ImageBindingSummary:
+    image_binding_count: mutable i64
+    image_binding_null_count: mutable i64
+    image_binding_texture_count: mutable i64
+    image_binding_storage_count: mutable i64
+    image_binding_videoout_storage_count: mutable i64
+    compositor_null_layer_count: mutable i64
     last_image_binding_id: mutable i64
     last_image_binding_index: mutable i64
     last_image_binding_stage: mutable i64
@@ -108,8 +114,12 @@ struct RenderCheckpoint:
     last_image_binding_bits: mutable i64
     last_image_binding_samples: mutable i64
     last_image_binding_format_kind: mutable i64
+
+struct LaunchSummary:
     launch_build_cache_warning_count: mutable i64
     launch_binary_current_count: mutable i64
+
+struct GpuCommandSummary:
     gpu_diagnostic_dump_count: mutable i64
     gpu_command_count: mutable i64
     gpu_command_draw_count: mutable i64
@@ -123,8 +133,12 @@ struct RenderCheckpoint:
     last_gpu_dispatch_x: mutable i64
     last_gpu_dispatch_y: mutable i64
     last_gpu_dispatch_z: mutable i64
+
+struct SuspicionSummary:
     suspicious_score: mutable i64
     first_suspicious_pass: mutable i64
+
+struct ScreenshotSummary:
     screenshot_count: mutable i64
     dark_screenshot_count: mutable i64
     bright_screenshot_count: mutable i64
@@ -133,6 +147,8 @@ struct RenderCheckpoint:
     last_screenshot_near_black_pct_x100: mutable i64
     min_screenshot_avg_luma_x100: mutable i64
     max_screenshot_avg_luma_x100: mutable i64
+
+struct BlackWatchdogSummary:
     black_watchdog_count: mutable i64
     black_watchdog_gameonly_count: mutable i64
     black_watchdog_frameimage_count: mutable i64
@@ -156,6 +172,17 @@ struct RenderCheckpoint:
     last_black_watchdog_last_writer_addr: mutable i64
     last_black_watchdog_videoout_addr: mutable i64
     last_black_watchdog_image_id: mutable i64
+
+struct RenderCheckpoint:
+    passes: RenderPassSummary
+    metadata: MetadataSummary
+    pipeline: PipelineSummary
+    bindings: ImageBindingSummary
+    launch: LaunchSummary
+    gpu: GpuCommandSummary
+    suspicion: SuspicionSummary
+    screenshots: ScreenshotSummary
+    watchdog: BlackWatchdogSummary
 
 struct FmaskRisk:
     score: i64
@@ -300,6 +327,12 @@ def existing_log_profile() -> TraceProfile:
 def black_watchdog_strict_profile() -> TraceProfile:
     return TraceProfile("black-watchdog-strict", 8000, false, false, false, false)
 
+def videoout_storage_force_color_profile() -> TraceProfile:
+    return TraceProfile("videoout-storage-force-color", 8000, false, false, false, false)
+
+def videoout_source_force_colors_profile() -> TraceProfile:
+    return TraceProfile("videoout-source-force-colors", 8000, false, false, false, false)
+
 def fmask_null_read_profile() -> TraceProfile:
     return TraceProfile("fmask-null-read", 8000, true, false, false, false)
 
@@ -345,19 +378,20 @@ def ufc_trace_progress_tick(budget: mutable TraceProgressBudget&) -> void can[Ab
 
 def empty_checkpoint() -> RenderCheckpoint:
     return RenderCheckpoint(
-        0, -1, -1, -1,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        -1, -1, -1, -1, metadata_kind_unknown(),
-        -1, -1, -1, -1, render_format_unknown(), render_format_unknown(),
-        -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, render_format_unknown(),
-        0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1,
-        0, -1,
-        0, 0, 0, -1, -1, -1, -1, -1,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
-        black_watchdog_stage_unknown(), -1, 0,
-        -1, -1, -1, -1, -1, -1,
-        black_watchdog_writer_unknown(), -1, -1, -1, -1
+        RenderPassSummary(0, -1, -1, -1, 0, 0, -1, -1, -1, -1, render_format_unknown(), render_format_unknown()),
+        MetadataSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, metadata_kind_unknown()),
+        PipelineSummary(-1, -1, -1, -1),
+        ImageBindingSummary(0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, render_format_unknown()),
+        LaunchSummary(0, 0),
+        GpuCommandSummary(0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1),
+        SuspicionSummary(0, -1),
+        ScreenshotSummary(0, 0, 0, -1, -1, -1, -1, -1),
+        BlackWatchdogSummary(
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+            black_watchdog_stage_unknown(), -1, 0,
+            -1, -1, -1, -1, -1, -1,
+            black_watchdog_writer_unknown(), -1, -1, -1, -1
+        )
     )
 
 def trace_byte_at(text: cstr, index: i64) -> u8:
@@ -559,109 +593,109 @@ def black_watchdog_writer_label(writer: i64) -> cstr:
     return "unknown"
 
 def ufc_trace_mark_suspicious(summary: mutable RenderCheckpoint&, pass_index: i64) -> void:
-    summary.suspicious_score <- summary.suspicious_score + 1
-    if summary.first_suspicious_pass < 0:
-        summary.first_suspicious_pass <- pass_index
+    summary.suspicion.suspicious_score <- summary.suspicion.suspicious_score + 1
+    if summary.suspicion.first_suspicious_pass < 0:
+        summary.suspicion.first_suspicious_pass <- pass_index
 
 def ufc_trace_record_metadata_read(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     kind: i64 = trace_metadata_kind(text, start, end)
     addr: i64 = trace_hex_after(text, start, end, "addr=", -1)
-    summary.metadata_texture_read_count <- summary.metadata_texture_read_count + 1
-    summary.last_metadata_read_addr <- addr
-    summary.last_metadata_read_kind <- kind
+    summary.metadata.metadata_texture_read_count <- summary.metadata.metadata_texture_read_count + 1
+    summary.metadata.last_metadata_read_addr <- addr
+    summary.metadata.last_metadata_read_kind <- kind
     if kind == metadata_kind_fmask():
-        summary.fmask_texture_read_count <- summary.fmask_texture_read_count + 1
+        summary.metadata.fmask_texture_read_count <- summary.metadata.fmask_texture_read_count + 1
     else:
         if kind == metadata_kind_cmask():
-            summary.cmask_texture_read_count <- summary.cmask_texture_read_count + 1
+            summary.metadata.cmask_texture_read_count <- summary.metadata.cmask_texture_read_count + 1
         else:
             if kind == metadata_kind_htile():
-                summary.htile_texture_read_count <- summary.htile_texture_read_count + 1
+                summary.metadata.htile_texture_read_count <- summary.metadata.htile_texture_read_count + 1
             else:
-                summary.unknown_metadata_read_count <- summary.unknown_metadata_read_count + 1
+                summary.metadata.unknown_metadata_read_count <- summary.metadata.unknown_metadata_read_count + 1
     if trace_line_contains(text, start, end, "action=null_descriptor") or trace_line_contains(text, start, end, "action=null_fmask_texture"):
-        summary.null_metadata_action_count <- summary.null_metadata_action_count + 1
-        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        summary.metadata.null_metadata_action_count <- summary.metadata.null_metadata_action_count + 1
+        ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
     if trace_line_contains(text, start, end, "action=sample_metadata"):
-        summary.sample_metadata_action_count <- summary.sample_metadata_action_count + 1
-    if addr != 0 and addr == summary.last_fmask_addr:
-        summary.metadata_read_hits_last_fmask_count <- summary.metadata_read_hits_last_fmask_count + 1
-    if addr != 0 and addr == summary.last_cmask_addr:
-        summary.metadata_read_hits_last_cmask_count <- summary.metadata_read_hits_last_cmask_count + 1
-    if addr != 0 and addr == summary.last_htile_addr:
-        summary.metadata_read_hits_last_htile_count <- summary.metadata_read_hits_last_htile_count + 1
+        summary.metadata.sample_metadata_action_count <- summary.metadata.sample_metadata_action_count + 1
+    if addr != 0 and addr == summary.metadata.last_fmask_addr:
+        summary.metadata.metadata_read_hits_last_fmask_count <- summary.metadata.metadata_read_hits_last_fmask_count + 1
+    if addr != 0 and addr == summary.metadata.last_cmask_addr:
+        summary.metadata.metadata_read_hits_last_cmask_count <- summary.metadata.metadata_read_hits_last_cmask_count + 1
+    if addr != 0 and addr == summary.metadata.last_htile_addr:
+        summary.metadata.metadata_read_hits_last_htile_count <- summary.metadata.metadata_read_hits_last_htile_count + 1
 
 def ufc_trace_record_compile_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     if trace_line_contains(text, start, end, "Compiling cs shader"):
-        summary.last_compute_shader <- trace_hex_after(text, start, end, "shader ", summary.last_compute_shader)
+        summary.pipeline.last_compute_shader <- trace_hex_after(text, start, end, "shader ", summary.pipeline.last_compute_shader)
     if trace_line_contains(text, start, end, "Compiling vs shader"):
-        summary.last_vertex_shader <- trace_hex_after(text, start, end, "shader ", summary.last_vertex_shader)
+        summary.pipeline.last_vertex_shader <- trace_hex_after(text, start, end, "shader ", summary.pipeline.last_vertex_shader)
     if trace_line_contains(text, start, end, "Compiling graphics pipeline"):
-        summary.last_graphics_pipeline <- trace_hex_after(text, start, end, "pipeline ", summary.last_graphics_pipeline)
+        summary.pipeline.last_graphics_pipeline <- trace_hex_after(text, start, end, "pipeline ", summary.pipeline.last_graphics_pipeline)
     if trace_line_contains(text, start, end, "Compiling compute pipeline"):
-        summary.last_compute_pipeline <- trace_hex_after(text, start, end, "pipeline ", summary.last_compute_pipeline)
+        summary.pipeline.last_compute_pipeline <- trace_hex_after(text, start, end, "pipeline ", summary.pipeline.last_compute_pipeline)
 
 def ufc_trace_record_image_binding(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
-    summary.image_binding_count <- summary.image_binding_count + 1
-    summary.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.last_videoout_stage)
-    summary.last_image_binding_id <- trace_decimal_after(text, start, end, "image_id=", summary.last_image_binding_id)
-    summary.last_image_binding_index <- trace_decimal_after(text, start, end, "binding_index=", summary.last_image_binding_index)
-    summary.last_image_binding_addr <- trace_hex_after(text, start, end, "guest_addr=", summary.last_image_binding_addr)
-    summary.last_image_binding_bits <- trace_decimal_after(text, start, end, "bits=", summary.last_image_binding_bits)
-    summary.last_image_binding_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "info_samples=", summary.last_image_binding_samples))
-    summary.last_image_binding_format_kind <- trace_render_format_kind(text, start, end)
+    summary.bindings.image_binding_count <- summary.bindings.image_binding_count + 1
+    summary.passes.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.passes.last_videoout_stage)
+    summary.bindings.last_image_binding_id <- trace_decimal_after(text, start, end, "image_id=", summary.bindings.last_image_binding_id)
+    summary.bindings.last_image_binding_index <- trace_decimal_after(text, start, end, "binding_index=", summary.bindings.last_image_binding_index)
+    summary.bindings.last_image_binding_addr <- trace_hex_after(text, start, end, "guest_addr=", summary.bindings.last_image_binding_addr)
+    summary.bindings.last_image_binding_bits <- trace_decimal_after(text, start, end, "bits=", summary.bindings.last_image_binding_bits)
+    summary.bindings.last_image_binding_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "info_samples=", summary.bindings.last_image_binding_samples))
+    summary.bindings.last_image_binding_format_kind <- trace_render_format_kind(text, start, end)
     if trace_line_contains(text, start, end, "descriptor=texture"):
-        summary.image_binding_texture_count <- summary.image_binding_texture_count + 1
+        summary.bindings.image_binding_texture_count <- summary.bindings.image_binding_texture_count + 1
     if trace_line_contains(text, start, end, "descriptor=storage"):
-        summary.image_binding_storage_count <- summary.image_binding_storage_count + 1
+        summary.bindings.image_binding_storage_count <- summary.bindings.image_binding_storage_count + 1
     if trace_line_contains(text, start, end, "stage=cs"):
-        summary.last_image_binding_stage <- 1
+        summary.bindings.last_image_binding_stage <- 1
     if trace_line_contains(text, start, end, "stage=vs"):
-        summary.last_image_binding_stage <- 2
+        summary.bindings.last_image_binding_stage <- 2
     if trace_line_contains(text, start, end, "stage=ps") or trace_line_contains(text, start, end, "stage=fs"):
-        summary.last_image_binding_stage <- 3
+        summary.bindings.last_image_binding_stage <- 3
     if trace_line_contains(text, start, end, "is_videoout_storage=true"):
-        summary.image_binding_videoout_storage_count <- summary.image_binding_videoout_storage_count + 1
+        summary.bindings.image_binding_videoout_storage_count <- summary.bindings.image_binding_videoout_storage_count + 1
 
 def ufc_trace_record_gpu_command(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
-    summary.gpu_command_count <- summary.gpu_command_count + 1
-    summary.last_gpu_command_serial <- trace_decimal_after(text, start, end, "GPU command [", summary.last_gpu_command_serial)
+    summary.gpu.gpu_command_count <- summary.gpu.gpu_command_count + 1
+    summary.gpu.last_gpu_command_serial <- trace_decimal_after(text, start, end, "GPU command [", summary.gpu.last_gpu_command_serial)
     if trace_line_contains(text, start, end, "] draw_indexed"):
-        summary.gpu_command_draw_count <- summary.gpu_command_draw_count + 1
-        summary.gpu_command_indexed_draw_count <- summary.gpu_command_indexed_draw_count + 1
-        summary.last_gpu_draw_indices <- trace_decimal_after(text, start, end, "num_indices=", summary.last_gpu_draw_indices)
+        summary.gpu.gpu_command_draw_count <- summary.gpu.gpu_command_draw_count + 1
+        summary.gpu.gpu_command_indexed_draw_count <- summary.gpu.gpu_command_indexed_draw_count + 1
+        summary.gpu.last_gpu_draw_indices <- trace_decimal_after(text, start, end, "num_indices=", summary.gpu.last_gpu_draw_indices)
     else:
         if trace_line_contains(text, start, end, "] draw"):
-            summary.gpu_command_draw_count <- summary.gpu_command_draw_count + 1
-            summary.last_gpu_draw_vertices <- trace_decimal_after(text, start, end, "num_vertices=", summary.last_gpu_draw_vertices)
+            summary.gpu.gpu_command_draw_count <- summary.gpu.gpu_command_draw_count + 1
+            summary.gpu.last_gpu_draw_vertices <- trace_decimal_after(text, start, end, "num_vertices=", summary.gpu.last_gpu_draw_vertices)
     if trace_line_contains(text, start, end, "indirect"):
-        summary.gpu_command_indirect_draw_count <- summary.gpu_command_indirect_draw_count + 1
+        summary.gpu.gpu_command_indirect_draw_count <- summary.gpu.gpu_command_indirect_draw_count + 1
     if trace_line_contains(text, start, end, "] dispatch"):
-        summary.gpu_command_dispatch_count <- summary.gpu_command_dispatch_count + 1
-        summary.last_gpu_dispatch_x <- trace_decimal_after(text, start, end, "x=", summary.last_gpu_dispatch_x)
-        summary.last_gpu_dispatch_y <- trace_decimal_after(text, start, end, "y=", summary.last_gpu_dispatch_y)
-        summary.last_gpu_dispatch_z <- trace_decimal_after(text, start, end, "z=", summary.last_gpu_dispatch_z)
+        summary.gpu.gpu_command_dispatch_count <- summary.gpu.gpu_command_dispatch_count + 1
+        summary.gpu.last_gpu_dispatch_x <- trace_decimal_after(text, start, end, "x=", summary.gpu.last_gpu_dispatch_x)
+        summary.gpu.last_gpu_dispatch_y <- trace_decimal_after(text, start, end, "y=", summary.gpu.last_gpu_dispatch_y)
+        summary.gpu.last_gpu_dispatch_z <- trace_decimal_after(text, start, end, "z=", summary.gpu.last_gpu_dispatch_z)
     if trace_line_contains(text, start, end, "] swapchain_"):
-        summary.gpu_command_swapchain_count <- summary.gpu_command_swapchain_count + 1
+        summary.gpu.gpu_command_swapchain_count <- summary.gpu.gpu_command_swapchain_count + 1
 
 def ufc_trace_record_screenshot(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     avg_luma_x100: i64 = trace_scaled_decimal_after(text, start, end, "avg_luma=", -1)
     near_black_x100: i64 = trace_scaled_decimal_after(text, start, end, "near_black=", -1)
     max_luma: i64 = trace_decimal_after(text, start, end, "max_luma=", -1)
-    summary.screenshot_count <- summary.screenshot_count + 1
-    summary.last_screenshot_avg_luma_x100 <- avg_luma_x100
-    summary.last_screenshot_near_black_pct_x100 <- near_black_x100
-    summary.last_screenshot_max_luma <- max_luma
+    summary.screenshots.screenshot_count <- summary.screenshots.screenshot_count + 1
+    summary.screenshots.last_screenshot_avg_luma_x100 <- avg_luma_x100
+    summary.screenshots.last_screenshot_near_black_pct_x100 <- near_black_x100
+    summary.screenshots.last_screenshot_max_luma <- max_luma
     if avg_luma_x100 >= 0:
-        if summary.min_screenshot_avg_luma_x100 < 0 or avg_luma_x100 < summary.min_screenshot_avg_luma_x100:
-            summary.min_screenshot_avg_luma_x100 <- avg_luma_x100
-        if summary.max_screenshot_avg_luma_x100 < 0 or avg_luma_x100 > summary.max_screenshot_avg_luma_x100:
-            summary.max_screenshot_avg_luma_x100 <- avg_luma_x100
+        if summary.screenshots.min_screenshot_avg_luma_x100 < 0 or avg_luma_x100 < summary.screenshots.min_screenshot_avg_luma_x100:
+            summary.screenshots.min_screenshot_avg_luma_x100 <- avg_luma_x100
+        if summary.screenshots.max_screenshot_avg_luma_x100 < 0 or avg_luma_x100 > summary.screenshots.max_screenshot_avg_luma_x100:
+            summary.screenshots.max_screenshot_avg_luma_x100 <- avg_luma_x100
         if avg_luma_x100 <= 500 or near_black_x100 >= 5000:
-            summary.dark_screenshot_count <- summary.dark_screenshot_count + 1
-            ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+            summary.screenshots.dark_screenshot_count <- summary.screenshots.dark_screenshot_count + 1
+            ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
         if avg_luma_x100 >= 2500 and near_black_x100 < 5000:
-            summary.bright_screenshot_count <- summary.bright_screenshot_count + 1
+            summary.screenshots.bright_screenshot_count <- summary.screenshots.bright_screenshot_count + 1
 
 def ufc_trace_record_black_watchdog(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     stage: i64 = trace_black_watchdog_stage(text, start, end)
@@ -669,52 +703,52 @@ def ufc_trace_record_black_watchdog(summary: mutable RenderCheckpoint&, text: cs
     guest_near_black_x100: i64 = trace_scaled_decimal_after(text, start, end, "guest_near_black=", -1)
     guest_max_luma: i64 = trace_decimal_after(text, start, end, "guest_max_luma=", -1)
     guest_nonblack: i64 = trace_decimal_after(text, start, end, "guest_nonblack=", -1)
-    summary.black_watchdog_count <- summary.black_watchdog_count + 1
-    summary.last_black_watchdog_stage <- stage
-    summary.last_black_watchdog_frame <- trace_decimal_after(text, start, end, "frame=", summary.last_black_watchdog_frame)
-    summary.last_black_watchdog_consecutive <- trace_decimal_after(text, start, end, "consecutive=", summary.last_black_watchdog_consecutive)
-    summary.last_black_watchdog_avg_luma_x100 <- trace_scaled_decimal_after(text, start, end, "avg_luma=", summary.last_black_watchdog_avg_luma_x100)
-    summary.last_black_watchdog_max_luma <- trace_decimal_after(text, start, end, "max_luma=", summary.last_black_watchdog_max_luma)
-    summary.last_black_watchdog_near_black_pct_x100 <- trace_scaled_decimal_after(text, start, end, "near_black=", summary.last_black_watchdog_near_black_pct_x100)
-    summary.last_black_watchdog_guest_avg_luma_x100 <- trace_scaled_decimal_after(text, start, end, "guest_avg_luma=", summary.last_black_watchdog_guest_avg_luma_x100)
-    summary.last_black_watchdog_guest_max_luma <- guest_max_luma
-    summary.last_black_watchdog_guest_near_black_pct_x100 <- guest_near_black_x100
-    summary.last_black_watchdog_last_writer <- trace_black_watchdog_writer(text, start, end)
-    summary.last_black_watchdog_last_writer_seq <- trace_decimal_after(text, start, end, "last_writer_seq=", summary.last_black_watchdog_last_writer_seq)
-    summary.last_black_watchdog_last_writer_addr <- trace_hex_after(text, start, end, "last_writer_addr=", summary.last_black_watchdog_last_writer_addr)
-    summary.last_black_watchdog_videoout_addr <- trace_hex_after(text, start, end, "videoout_addr=", summary.last_black_watchdog_videoout_addr)
-    summary.last_black_watchdog_image_id <- trace_decimal_after(text, start, end, "image_id=", summary.last_black_watchdog_image_id)
+    summary.watchdog.black_watchdog_count <- summary.watchdog.black_watchdog_count + 1
+    summary.watchdog.last_black_watchdog_stage <- stage
+    summary.watchdog.last_black_watchdog_frame <- trace_decimal_after(text, start, end, "frame=", summary.watchdog.last_black_watchdog_frame)
+    summary.watchdog.last_black_watchdog_consecutive <- trace_decimal_after(text, start, end, "consecutive=", summary.watchdog.last_black_watchdog_consecutive)
+    summary.watchdog.last_black_watchdog_avg_luma_x100 <- trace_scaled_decimal_after(text, start, end, "avg_luma=", summary.watchdog.last_black_watchdog_avg_luma_x100)
+    summary.watchdog.last_black_watchdog_max_luma <- trace_decimal_after(text, start, end, "max_luma=", summary.watchdog.last_black_watchdog_max_luma)
+    summary.watchdog.last_black_watchdog_near_black_pct_x100 <- trace_scaled_decimal_after(text, start, end, "near_black=", summary.watchdog.last_black_watchdog_near_black_pct_x100)
+    summary.watchdog.last_black_watchdog_guest_avg_luma_x100 <- trace_scaled_decimal_after(text, start, end, "guest_avg_luma=", summary.watchdog.last_black_watchdog_guest_avg_luma_x100)
+    summary.watchdog.last_black_watchdog_guest_max_luma <- guest_max_luma
+    summary.watchdog.last_black_watchdog_guest_near_black_pct_x100 <- guest_near_black_x100
+    summary.watchdog.last_black_watchdog_last_writer <- trace_black_watchdog_writer(text, start, end)
+    summary.watchdog.last_black_watchdog_last_writer_seq <- trace_decimal_after(text, start, end, "last_writer_seq=", summary.watchdog.last_black_watchdog_last_writer_seq)
+    summary.watchdog.last_black_watchdog_last_writer_addr <- trace_hex_after(text, start, end, "last_writer_addr=", summary.watchdog.last_black_watchdog_last_writer_addr)
+    summary.watchdog.last_black_watchdog_videoout_addr <- trace_hex_after(text, start, end, "videoout_addr=", summary.watchdog.last_black_watchdog_videoout_addr)
+    summary.watchdog.last_black_watchdog_image_id <- trace_decimal_after(text, start, end, "image_id=", summary.watchdog.last_black_watchdog_image_id)
     if stage == black_watchdog_stage_gameonly():
-        summary.black_watchdog_gameonly_count <- summary.black_watchdog_gameonly_count + 1
+        summary.watchdog.black_watchdog_gameonly_count <- summary.watchdog.black_watchdog_gameonly_count + 1
         if not black:
-            summary.black_watchdog_nonblack_gameonly_count <- summary.black_watchdog_nonblack_gameonly_count + 1
+            summary.watchdog.black_watchdog_nonblack_gameonly_count <- summary.watchdog.black_watchdog_nonblack_gameonly_count + 1
     if stage == black_watchdog_stage_frameimage():
-        summary.black_watchdog_frameimage_count <- summary.black_watchdog_frameimage_count + 1
+        summary.watchdog.black_watchdog_frameimage_count <- summary.watchdog.black_watchdog_frameimage_count + 1
     if stage == black_watchdog_stage_withoverlays():
-        summary.black_watchdog_withoverlays_count <- summary.black_watchdog_withoverlays_count + 1
+        summary.watchdog.black_watchdog_withoverlays_count <- summary.watchdog.black_watchdog_withoverlays_count + 1
     if black:
-        summary.black_watchdog_black_count <- summary.black_watchdog_black_count + 1
-        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        summary.watchdog.black_watchdog_black_count <- summary.watchdog.black_watchdog_black_count + 1
+        ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
         if stage == black_watchdog_stage_gameonly():
             if guest_near_black_x100 >= 9950 and guest_max_luma <= 8:
-                summary.black_watchdog_upstream_guest_black_count <- summary.black_watchdog_upstream_guest_black_count + 1
+                summary.watchdog.black_watchdog_upstream_guest_black_count <- summary.watchdog.black_watchdog_upstream_guest_black_count + 1
             else:
                 if guest_nonblack > 0 or guest_max_luma > 8:
-                    summary.black_watchdog_vulkan_black_guest_nonblack_count <- summary.black_watchdog_vulkan_black_guest_nonblack_count + 1
+                    summary.watchdog.black_watchdog_vulkan_black_guest_nonblack_count <- summary.watchdog.black_watchdog_vulkan_black_guest_nonblack_count + 1
 
 def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start: i64, end: i64) -> void:
     ufc_trace_record_compile_line(summary, text, start, end)
     if trace_line_contains(text, start, end, "TRACE_BLACK_WATCHDOG"):
         ufc_trace_record_black_watchdog(summary, text, start, end)
     if trace_line_contains(text, start, end, "Strict black-screen watchdog: persistent unexpected black"):
-        summary.black_watchdog_persistent_abort_count <- summary.black_watchdog_persistent_abort_count + 1
+        summary.watchdog.black_watchdog_persistent_abort_count <- summary.watchdog.black_watchdog_persistent_abort_count + 1
         ufc_trace_record_black_watchdog(summary, text, start, end)
     if trace_line_contains(text, start, end, "ELISA_TRACE build_cache_warning"):
-        summary.launch_build_cache_warning_count <- summary.launch_build_cache_warning_count + 1
+        summary.launch.launch_build_cache_warning_count <- summary.launch.launch_build_cache_warning_count + 1
     if trace_line_contains(text, start, end, "ELISA_TRACE binary_path=./build-codex-make/shadps4"):
-        summary.launch_binary_current_count <- summary.launch_binary_current_count + 1
+        summary.launch.launch_binary_current_count <- summary.launch.launch_binary_current_count + 1
     if trace_line_contains(text, start, end, "GPU command diagnostics:"):
-        summary.gpu_diagnostic_dump_count <- summary.gpu_diagnostic_dump_count + 1
+        summary.gpu.gpu_diagnostic_dump_count <- summary.gpu.gpu_diagnostic_dump_count + 1
     if trace_line_contains(text, start, end, "GPU command ["):
         ufc_trace_record_gpu_command(summary, text, start, end)
     if trace_line_contains(text, start, end, "TRACE_SCREENSHOT"):
@@ -722,39 +756,39 @@ def ufc_trace_analyze_line(summary: mutable RenderCheckpoint&, text: cstr, start
     if not trace_line_contains(text, start, end, "TRACE_RENDER"):
         return
     if trace_line_contains(text, start, end, "TRACE_RENDER metadata_register"):
-        summary.metadata_register_count <- summary.metadata_register_count + 1
+        summary.metadata.metadata_register_count <- summary.metadata.metadata_register_count + 1
     if trace_line_contains(text, start, end, "TRACE_RENDER image_binding_null"):
-        summary.image_binding_null_count <- summary.image_binding_null_count + 1
-        summary.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.last_videoout_stage)
-        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        summary.bindings.image_binding_null_count <- summary.bindings.image_binding_null_count + 1
+        summary.passes.last_videoout_stage <- trace_decimal_after(text, start, end, "videoout_stage=", summary.passes.last_videoout_stage)
+        ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
     if trace_line_contains(text, start, end, "TRACE_RENDER compositor_null_layer"):
-        summary.compositor_null_layer_count <- summary.compositor_null_layer_count + 1
-        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        summary.bindings.compositor_null_layer_count <- summary.bindings.compositor_null_layer_count + 1
+        ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
     if trace_line_contains(text, start, end, "TRACE_RENDER image_binding") and not trace_line_contains(text, start, end, "TRACE_RENDER image_binding_null"):
         ufc_trace_record_image_binding(summary, text, start, end)
     if trace_line_contains(text, start, end, "TRACE_RENDER render_target"):
-        summary.render_target_count <- summary.render_target_count + 1
-        summary.last_render_pass <- trace_decimal_after(text, start, end, "pass=", summary.last_render_pass)
-        summary.last_fmask_addr <- trace_hex_after(text, start, end, "fmask=", summary.last_fmask_addr)
-        summary.last_cmask_addr <- trace_hex_after(text, start, end, "cmask=", summary.last_cmask_addr)
-        summary.last_render_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "info_samples=", summary.last_render_samples))
-        summary.last_render_bits <- trace_decimal_after(text, start, end, "bits=", summary.last_render_bits)
-        summary.last_render_format_kind <- trace_render_format_kind(text, start, end)
-        if summary.last_fmask_addr != 0 and summary.last_fmask_addr == summary.last_cmask_addr:
-            summary.fmask_cmask_alias_count <- summary.fmask_cmask_alias_count + 1
-            ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        summary.passes.render_target_count <- summary.passes.render_target_count + 1
+        summary.passes.last_render_pass <- trace_decimal_after(text, start, end, "pass=", summary.passes.last_render_pass)
+        summary.metadata.last_fmask_addr <- trace_hex_after(text, start, end, "fmask=", summary.metadata.last_fmask_addr)
+        summary.metadata.last_cmask_addr <- trace_hex_after(text, start, end, "cmask=", summary.metadata.last_cmask_addr)
+        summary.passes.last_render_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "info_samples=", summary.passes.last_render_samples))
+        summary.passes.last_render_bits <- trace_decimal_after(text, start, end, "bits=", summary.passes.last_render_bits)
+        summary.passes.last_render_format_kind <- trace_render_format_kind(text, start, end)
+        if summary.metadata.last_fmask_addr != 0 and summary.metadata.last_fmask_addr == summary.metadata.last_cmask_addr:
+            summary.metadata.fmask_cmask_alias_count <- summary.metadata.fmask_cmask_alias_count + 1
+            ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
     if trace_line_contains(text, start, end, "TRACE_RENDER depth_target"):
-        summary.depth_target_count <- summary.depth_target_count + 1
-        summary.last_depth_pass <- trace_decimal_after(text, start, end, "pass=", summary.last_depth_pass)
-        summary.last_htile_addr <- trace_hex_after(text, start, end, "htile=", summary.last_htile_addr)
-        summary.last_depth_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "samples=", summary.last_depth_samples))
-        summary.last_depth_bits <- trace_decimal_after(text, start, end, "bits=", summary.last_depth_bits)
-        summary.last_depth_format_kind <- trace_render_format_kind(text, start, end)
+        summary.passes.depth_target_count <- summary.passes.depth_target_count + 1
+        summary.passes.last_depth_pass <- trace_decimal_after(text, start, end, "pass=", summary.passes.last_depth_pass)
+        summary.metadata.last_htile_addr <- trace_hex_after(text, start, end, "htile=", summary.metadata.last_htile_addr)
+        summary.passes.last_depth_samples <- trace_decimal_after(text, start, end, "backing_samples=", trace_decimal_after(text, start, end, "samples=", summary.passes.last_depth_samples))
+        summary.passes.last_depth_bits <- trace_decimal_after(text, start, end, "bits=", summary.passes.last_depth_bits)
+        summary.passes.last_depth_format_kind <- trace_render_format_kind(text, start, end)
     if trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress") and not trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress_missing_mrt1"):
-        summary.fmask_decompress_count <- summary.fmask_decompress_count + 1
+        summary.metadata.fmask_decompress_count <- summary.metadata.fmask_decompress_count + 1
     if trace_line_contains(text, start, end, "TRACE_RENDER fmask_decompress_missing_mrt1"):
-        summary.fmask_decompress_missing_mrt1_count <- summary.fmask_decompress_missing_mrt1_count + 1
-        ufc_trace_mark_suspicious(summary, summary.last_render_pass)
+        summary.metadata.fmask_decompress_missing_mrt1_count <- summary.metadata.fmask_decompress_missing_mrt1_count + 1
+        ufc_trace_mark_suspicious(summary, summary.passes.last_render_pass)
     if trace_line_contains(text, start, end, "TRACE_RENDER metadata_texture_read"):
         ufc_trace_record_metadata_read(summary, text, start, end)
 
@@ -766,36 +800,38 @@ def ufc_trace_analyze_text(log_text: cstr) -> RenderCheckpoint:
     trusted Unsafe.AssumeProgress:
         while index <= text_len:
             if index == text_len or trace_byte_at(log_text, index) == '\n':
-                summary.line_count <- summary.line_count + 1
+                summary.passes.line_count <- summary.passes.line_count + 1
                 ufc_trace_analyze_line(summary, log_text, start, index)
                 start <- index + 1
             index <- index + 1
     return summary
 
 def ufc_trace_recommended_profile(summary: RenderCheckpoint) -> TraceProfile:
-    if summary.null_metadata_action_count > 0 or summary.metadata_read_hits_last_fmask_count > 0:
+    if summary.watchdog.black_watchdog_gameonly_count > 0 and summary.watchdog.last_black_watchdog_last_writer == black_watchdog_writer_bind_storage_videoout():
+        return videoout_storage_force_color_profile()
+    if summary.metadata.null_metadata_action_count > 0 or summary.metadata.metadata_read_hits_last_fmask_count > 0:
         return fmask_null_read_profile()
-    if summary.fmask_decompress_missing_mrt1_count > 0 or summary.fmask_decompress_count > 0:
+    if summary.metadata.fmask_decompress_missing_mrt1_count > 0 or summary.metadata.fmask_decompress_count > 0:
         return fmask_in_place_profile()
-    if summary.fmask_cmask_alias_count > 0:
+    if summary.metadata.fmask_cmask_alias_count > 0:
         return fmask_null_read_profile()
-    if summary.compositor_null_layer_count > 0 or summary.image_binding_null_count > 0:
+    if summary.bindings.compositor_null_layer_count > 0 or summary.bindings.image_binding_null_count > 0:
         return compositor_null_layer_profile()
     return baseline_safe_profile()
 
 def ufc_trace_fmask_metadata_class(summary: RenderCheckpoint) -> FmaskMetadataClass:
-    if summary.last_fmask_addr <= 0:
+    if summary.metadata.last_fmask_addr <= 0:
         return FmaskMetadataClass(fmask_metadata_absent(), "absent", "no FMASK metadata address was observed in the trace excerpt", false)
-    if summary.last_cmask_addr > 0 and summary.last_fmask_addr == summary.last_cmask_addr:
-        if summary.last_render_samples <= 1:
+    if summary.metadata.last_cmask_addr > 0 and summary.metadata.last_fmask_addr == summary.metadata.last_cmask_addr:
+        if summary.passes.last_render_samples <= 1:
             return FmaskMetadataClass(fmask_metadata_single_sample_alias(), "single-sample-alias", "single-sample render target reports the same FMASK and CMASK address", true)
         return FmaskMetadataClass(fmask_metadata_aliased(), "aliased", "render target reports the same FMASK and CMASK address", true)
-    if summary.last_render_samples <= 1:
+    if summary.passes.last_render_samples <= 1:
         return FmaskMetadataClass(fmask_metadata_single_sample_present(), "single-sample-present", "single-sample render target still reports an FMASK address", true)
     return FmaskMetadataClass(fmask_metadata_separate(), "separate", "FMASK and CMASK metadata addresses are present and distinct", false)
 
 def ufc_trace_fmask_risk(summary: RenderCheckpoint) -> FmaskRisk:
-    score: mutable i64 = summary.suspicious_score
+    score: mutable i64 = summary.suspicion.suspicious_score
     reason: mutable cstr = "no suspicious FMASK-adjacent trace signals"
     metadata_class: FmaskMetadataClass = ufc_trace_fmask_metadata_class(summary)
     if metadata_class.kind == fmask_metadata_single_sample_alias():
@@ -805,25 +841,25 @@ def ufc_trace_fmask_risk(summary: RenderCheckpoint) -> FmaskRisk:
         if metadata_class.kind == fmask_metadata_single_sample_present():
             score <- score + 1
             reason <- metadata_class.reason
-    if summary.metadata_read_hits_last_fmask_count > 0:
+    if summary.metadata.metadata_read_hits_last_fmask_count > 0:
         score <- score + 2
         reason <- "metadata reads hit the latest FMASK address"
-    if summary.null_metadata_action_count > 0:
+    if summary.metadata.null_metadata_action_count > 0:
         score <- score + 2
         reason <- "metadata texture read was nulled near the render path"
-    if summary.fmask_cmask_alias_count > 0:
+    if summary.metadata.fmask_cmask_alias_count > 0:
         score <- score + 3
         reason <- "render target reports aliased FMASK and CMASK addresses"
-    if summary.fmask_decompress_missing_mrt1_count > 0:
+    if summary.metadata.fmask_decompress_missing_mrt1_count > 0:
         score <- score + 2
         reason <- "FMASK decompress was missing MRT1"
-    if summary.compositor_null_layer_count > 0:
+    if summary.bindings.compositor_null_layer_count > 0:
         score <- score + 2
         reason <- "compositor layer was nulled"
-    if summary.image_binding_null_count > 0:
+    if summary.bindings.image_binding_null_count > 0:
         score <- score + 1
         reason <- "image binding became null near videoout"
-    if summary.fmask_texture_read_count > 0 and summary.fmask_decompress_count == 0:
+    if summary.metadata.fmask_texture_read_count > 0 and summary.metadata.fmask_decompress_count == 0:
         score <- score + 1
         reason <- "FMASK metadata was sampled without a recorded decompress"
     if score >= 6:
@@ -833,8 +869,8 @@ def ufc_trace_fmask_risk(summary: RenderCheckpoint) -> FmaskRisk:
     return FmaskRisk(score, fmask_risk_low(), "low", reason, ufc_trace_recommended_profile(summary), false)
 
 def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDiagnosis:
-    writer_label: cstr = black_watchdog_writer_label(summary.last_black_watchdog_last_writer)
-    if summary.black_watchdog_count == 0:
+    writer_label: cstr = black_watchdog_writer_label(summary.watchdog.last_black_watchdog_last_writer)
+    if summary.watchdog.black_watchdog_count == 0:
         return BlackScreenDiagnosis(
             black_screen_kind_absent(),
             "absent",
@@ -844,17 +880,20 @@ def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDi
             "run with SHADPS4_STRICT_BLACK_SCREEN_WATCHDOG=1 and arm the watchdog near the transition",
             false
         )
-    if summary.black_watchdog_upstream_guest_black_count > 0:
+    if summary.watchdog.black_watchdog_upstream_guest_black_count > 0:
+        action: mutable cstr = "inspect the last VideoOut storage writer and the render passes feeding that image"
+        if summary.watchdog.last_black_watchdog_last_writer == black_watchdog_writer_bind_storage_videoout():
+            action <- "run videoout-storage-force-color; if it becomes nonblack, inspect source textures and shader 0xc455a5aa2c447041"
         return BlackScreenDiagnosis(
             black_screen_kind_upstream_guest_black(),
             "upstream-guest-black",
             "GameOnly was black and raw VideoOut backing memory was also near-black",
             "guest VideoOut producer or upstream render/copy path",
             writer_label,
-            "inspect the last VideoOut storage writer and the render passes feeding that image",
+            action,
             true
         )
-    if summary.black_watchdog_vulkan_black_guest_nonblack_count > 0:
+    if summary.watchdog.black_watchdog_vulkan_black_guest_nonblack_count > 0:
         return BlackScreenDiagnosis(
             black_screen_kind_vulkan_source_black(),
             "vulkan-source-black",
@@ -864,7 +903,7 @@ def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDi
             "prioritize texture-cache invalidation, tiling conversion, and image layout barriers",
             true
         )
-    if summary.black_watchdog_frameimage_count > 0 and summary.black_watchdog_black_count > 0 and summary.black_watchdog_gameonly_count == 0:
+    if summary.watchdog.black_watchdog_frameimage_count > 0 and summary.watchdog.black_watchdog_black_count > 0 and summary.watchdog.black_watchdog_gameonly_count == 0:
         return BlackScreenDiagnosis(
             black_screen_kind_compositor_or_swapchain(),
             "host-compositor-black",
@@ -874,12 +913,12 @@ def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDi
             "capture both GameOnly and WithOverlays in the same failing window",
             true
         )
-    if summary.black_watchdog_persistent_abort_count > 0:
+    if summary.watchdog.black_watchdog_persistent_abort_count > 0:
         return BlackScreenDiagnosis(
             black_screen_kind_watchdog_abort(),
             "watchdog-abort",
             "strict watchdog aborted after repeated near-black frames, but the source split was incomplete",
-            black_watchdog_stage_label(summary.last_black_watchdog_stage),
+            black_watchdog_stage_label(summary.watchdog.last_black_watchdog_stage),
             writer_label,
             "rerun with GameOnly, FrameImage, and WithOverlays watchdog readbacks enabled",
             true
@@ -888,7 +927,7 @@ def ufc_trace_black_screen_diagnosis(summary: RenderCheckpoint) -> BlackScreenDi
         black_screen_kind_unclassified(),
         "unclassified",
         "watchdog evidence was present but did not match a known source split",
-        black_watchdog_stage_label(summary.last_black_watchdog_stage),
+        black_watchdog_stage_label(summary.watchdog.last_black_watchdog_stage),
         writer_label,
         "inspect the compact TRACE_BLACK_WATCHDOG lines around the transition",
         true
@@ -990,25 +1029,25 @@ def ufc_trace_print_summary(result: TraceResult) -> void can[Console.Write]:
             printf("exit_code=%d timed_out=%d ok=%d\n", result.run.exit_code, 1 if result.run.timed_out else 0, 1 if result.ok else 0)
             if not result.ok:
                 printf("error=%s\n", result.error_message)
-            printf("lines=%lld image_bindings=%lld render_targets=%lld depth_targets=%lld\n", result.render.line_count, result.render.image_binding_count, result.render.render_target_count, result.render.depth_target_count)
-            printf("image_binding_kinds texture=%lld storage=%lld videoout_storage=%lld last_image_id=%lld last_binding=%lld last_stage=%lld last_addr=0x%llx\n", result.render.image_binding_texture_count, result.render.image_binding_storage_count, result.render.image_binding_videoout_storage_count, result.render.last_image_binding_id, result.render.last_image_binding_index, result.render.last_image_binding_stage, result.render.last_image_binding_addr)
-            printf("last_image_binding format_kind=%lld samples=%lld bits=%lld\n", result.render.last_image_binding_format_kind, result.render.last_image_binding_samples, result.render.last_image_binding_bits)
-            printf("launch_sanity current_binary=%lld stale_build_warnings=%lld\n", result.render.launch_binary_current_count, result.render.launch_build_cache_warning_count)
-            printf("gpu_diagnostics dumps=%lld commands=%lld draws=%lld indexed_draws=%lld indirect_draws=%lld dispatches=%lld swapchain=%lld last_serial=%lld\n", result.render.gpu_diagnostic_dump_count, result.render.gpu_command_count, result.render.gpu_command_draw_count, result.render.gpu_command_indexed_draw_count, result.render.gpu_command_indirect_draw_count, result.render.gpu_command_dispatch_count, result.render.gpu_command_swapchain_count, result.render.last_gpu_command_serial)
-            printf("last_gpu_draw vertices=%lld indices=%lld last_dispatch=%lldx%lldx%lld\n", result.render.last_gpu_draw_vertices, result.render.last_gpu_draw_indices, result.render.last_gpu_dispatch_x, result.render.last_gpu_dispatch_y, result.render.last_gpu_dispatch_z)
-            printf("screenshots count=%lld dark=%lld bright=%lld last_avg_luma_x100=%lld last_max_luma=%lld last_near_black_x100=%lld min_avg_luma_x100=%lld max_avg_luma_x100=%lld\n", result.render.screenshot_count, result.render.dark_screenshot_count, result.render.bright_screenshot_count, result.render.last_screenshot_avg_luma_x100, result.render.last_screenshot_max_luma, result.render.last_screenshot_near_black_pct_x100, result.render.min_screenshot_avg_luma_x100, result.render.max_screenshot_avg_luma_x100)
-            printf("black_watchdog count=%lld gameonly=%lld frameimage=%lld withoverlays=%lld black=%lld nonblack_gameonly=%lld persistent_aborts=%lld upstream_guest_black=%lld vulkan_black_guest_nonblack=%lld\n", result.render.black_watchdog_count, result.render.black_watchdog_gameonly_count, result.render.black_watchdog_frameimage_count, result.render.black_watchdog_withoverlays_count, result.render.black_watchdog_black_count, result.render.black_watchdog_nonblack_gameonly_count, result.render.black_watchdog_persistent_abort_count, result.render.black_watchdog_upstream_guest_black_count, result.render.black_watchdog_vulkan_black_guest_nonblack_count)
-            printf("black_watchdog_last stage=%lld frame=%lld consecutive=%lld avg_luma_x100=%lld max_luma=%lld near_black_x100=%lld guest_avg_luma_x100=%lld guest_max_luma=%lld guest_near_black_x100=%lld writer=%lld writer_seq=%lld writer_addr=0x%llx videoout_addr=0x%llx image_id=%lld\n", result.render.last_black_watchdog_stage, result.render.last_black_watchdog_frame, result.render.last_black_watchdog_consecutive, result.render.last_black_watchdog_avg_luma_x100, result.render.last_black_watchdog_max_luma, result.render.last_black_watchdog_near_black_pct_x100, result.render.last_black_watchdog_guest_avg_luma_x100, result.render.last_black_watchdog_guest_max_luma, result.render.last_black_watchdog_guest_near_black_pct_x100, result.render.last_black_watchdog_last_writer, result.render.last_black_watchdog_last_writer_seq, result.render.last_black_watchdog_last_writer_addr, result.render.last_black_watchdog_videoout_addr, result.render.last_black_watchdog_image_id)
+            printf("lines=%lld image_bindings=%lld render_targets=%lld depth_targets=%lld\n", result.render.passes.line_count, result.render.bindings.image_binding_count, result.render.passes.render_target_count, result.render.passes.depth_target_count)
+            printf("image_binding_kinds texture=%lld storage=%lld videoout_storage=%lld last_image_id=%lld last_binding=%lld last_stage=%lld last_addr=0x%llx\n", result.render.bindings.image_binding_texture_count, result.render.bindings.image_binding_storage_count, result.render.bindings.image_binding_videoout_storage_count, result.render.bindings.last_image_binding_id, result.render.bindings.last_image_binding_index, result.render.bindings.last_image_binding_stage, result.render.bindings.last_image_binding_addr)
+            printf("last_image_binding format_kind=%lld samples=%lld bits=%lld\n", result.render.bindings.last_image_binding_format_kind, result.render.bindings.last_image_binding_samples, result.render.bindings.last_image_binding_bits)
+            printf("launch_sanity current_binary=%lld stale_build_warnings=%lld\n", result.render.launch.launch_binary_current_count, result.render.launch.launch_build_cache_warning_count)
+            printf("gpu_diagnostics dumps=%lld commands=%lld draws=%lld indexed_draws=%lld indirect_draws=%lld dispatches=%lld swapchain=%lld last_serial=%lld\n", result.render.gpu.gpu_diagnostic_dump_count, result.render.gpu.gpu_command_count, result.render.gpu.gpu_command_draw_count, result.render.gpu.gpu_command_indexed_draw_count, result.render.gpu.gpu_command_indirect_draw_count, result.render.gpu.gpu_command_dispatch_count, result.render.gpu.gpu_command_swapchain_count, result.render.gpu.last_gpu_command_serial)
+            printf("last_gpu_draw vertices=%lld indices=%lld last_dispatch=%lldx%lldx%lld\n", result.render.gpu.last_gpu_draw_vertices, result.render.gpu.last_gpu_draw_indices, result.render.gpu.last_gpu_dispatch_x, result.render.gpu.last_gpu_dispatch_y, result.render.gpu.last_gpu_dispatch_z)
+            printf("screenshots count=%lld dark=%lld bright=%lld last_avg_luma_x100=%lld last_max_luma=%lld last_near_black_x100=%lld min_avg_luma_x100=%lld max_avg_luma_x100=%lld\n", result.render.screenshots.screenshot_count, result.render.screenshots.dark_screenshot_count, result.render.screenshots.bright_screenshot_count, result.render.screenshots.last_screenshot_avg_luma_x100, result.render.screenshots.last_screenshot_max_luma, result.render.screenshots.last_screenshot_near_black_pct_x100, result.render.screenshots.min_screenshot_avg_luma_x100, result.render.screenshots.max_screenshot_avg_luma_x100)
+            printf("black_watchdog count=%lld gameonly=%lld frameimage=%lld withoverlays=%lld black=%lld nonblack_gameonly=%lld persistent_aborts=%lld upstream_guest_black=%lld vulkan_black_guest_nonblack=%lld\n", result.render.watchdog.black_watchdog_count, result.render.watchdog.black_watchdog_gameonly_count, result.render.watchdog.black_watchdog_frameimage_count, result.render.watchdog.black_watchdog_withoverlays_count, result.render.watchdog.black_watchdog_black_count, result.render.watchdog.black_watchdog_nonblack_gameonly_count, result.render.watchdog.black_watchdog_persistent_abort_count, result.render.watchdog.black_watchdog_upstream_guest_black_count, result.render.watchdog.black_watchdog_vulkan_black_guest_nonblack_count)
+            printf("black_watchdog_last stage=%lld frame=%lld consecutive=%lld avg_luma_x100=%lld max_luma=%lld near_black_x100=%lld guest_avg_luma_x100=%lld guest_max_luma=%lld guest_near_black_x100=%lld writer=%lld writer_seq=%lld writer_addr=0x%llx videoout_addr=0x%llx image_id=%lld\n", result.render.watchdog.last_black_watchdog_stage, result.render.watchdog.last_black_watchdog_frame, result.render.watchdog.last_black_watchdog_consecutive, result.render.watchdog.last_black_watchdog_avg_luma_x100, result.render.watchdog.last_black_watchdog_max_luma, result.render.watchdog.last_black_watchdog_near_black_pct_x100, result.render.watchdog.last_black_watchdog_guest_avg_luma_x100, result.render.watchdog.last_black_watchdog_guest_max_luma, result.render.watchdog.last_black_watchdog_guest_near_black_pct_x100, result.render.watchdog.last_black_watchdog_last_writer, result.render.watchdog.last_black_watchdog_last_writer_seq, result.render.watchdog.last_black_watchdog_last_writer_addr, result.render.watchdog.last_black_watchdog_videoout_addr, result.render.watchdog.last_black_watchdog_image_id)
             printf("black_screen_diagnosis kind=%lld label=%s origin=%s writer=%s avoid_long_run=%d reason=%s action=%s\n", black_diagnosis.kind, black_diagnosis.label, black_diagnosis.likely_origin, black_diagnosis.last_writer_label, 1 if black_diagnosis.avoid_long_run else 0, black_diagnosis.reason, black_diagnosis.recommended_action)
-            printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.image_binding_null_count, result.render.compositor_null_layer_count, result.render.metadata_register_count, result.render.fmask_decompress_missing_mrt1_count, result.render.suspicious_score, result.render.first_suspicious_pass)
-            printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.last_videoout_stage, result.render.last_render_pass, result.render.last_depth_pass)
-            printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.last_fmask_addr, result.render.last_cmask_addr, result.render.last_htile_addr)
-            printf("last_formats render_kind=%lld render_samples=%lld render_bits=%lld depth_kind=%lld depth_samples=%lld depth_bits=%lld\n", result.render.last_render_format_kind, result.render.last_render_samples, result.render.last_render_bits, result.render.last_depth_format_kind, result.render.last_depth_samples, result.render.last_depth_bits)
-            printf("last_pipeline compute_shader=0x%llx vertex_shader=0x%llx compute_pipeline=0x%llx graphics_pipeline=0x%llx\n", result.render.last_compute_shader, result.render.last_vertex_shader, result.render.last_compute_pipeline, result.render.last_graphics_pipeline)
-            printf("fmask_decompress=%lld metadata_texture_reads=%lld\n", result.render.fmask_decompress_count, result.render.metadata_texture_read_count)
-            printf("metadata_reads_by_kind fmask=%lld cmask=%lld htile=%lld unknown=%lld\n", result.render.fmask_texture_read_count, result.render.cmask_texture_read_count, result.render.htile_texture_read_count, result.render.unknown_metadata_read_count)
-            printf("metadata_actions null=%lld sample=%lld last_read_addr=0x%llx last_read_kind=%lld\n", result.render.null_metadata_action_count, result.render.sample_metadata_action_count, result.render.last_metadata_read_addr, result.render.last_metadata_read_kind)
-            printf("metadata_hits last_fmask=%lld last_cmask=%lld last_htile=%lld fmask_cmask_aliases=%lld\n", result.render.metadata_read_hits_last_fmask_count, result.render.metadata_read_hits_last_cmask_count, result.render.metadata_read_hits_last_htile_count, result.render.fmask_cmask_alias_count)
+            printf("null_bindings=%lld compositor_null_layers=%lld metadata_registers=%lld missing_mrt1=%lld suspicious_score=%lld first_suspicious_pass=%lld\n", result.render.bindings.image_binding_null_count, result.render.bindings.compositor_null_layer_count, result.render.metadata.metadata_register_count, result.render.metadata.fmask_decompress_missing_mrt1_count, result.render.suspicion.suspicious_score, result.render.suspicion.first_suspicious_pass)
+            printf("last_videoout_stage=%lld last_render_pass=%lld last_depth_pass=%lld\n", result.render.passes.last_videoout_stage, result.render.passes.last_render_pass, result.render.passes.last_depth_pass)
+            printf("last_fmask=0x%llx last_cmask=0x%llx last_htile=0x%llx\n", result.render.metadata.last_fmask_addr, result.render.metadata.last_cmask_addr, result.render.metadata.last_htile_addr)
+            printf("last_formats render_kind=%lld render_samples=%lld render_bits=%lld depth_kind=%lld depth_samples=%lld depth_bits=%lld\n", result.render.passes.last_render_format_kind, result.render.passes.last_render_samples, result.render.passes.last_render_bits, result.render.passes.last_depth_format_kind, result.render.passes.last_depth_samples, result.render.passes.last_depth_bits)
+            printf("last_pipeline compute_shader=0x%llx vertex_shader=0x%llx compute_pipeline=0x%llx graphics_pipeline=0x%llx\n", result.render.pipeline.last_compute_shader, result.render.pipeline.last_vertex_shader, result.render.pipeline.last_compute_pipeline, result.render.pipeline.last_graphics_pipeline)
+            printf("fmask_decompress=%lld metadata_texture_reads=%lld\n", result.render.metadata.fmask_decompress_count, result.render.metadata.metadata_texture_read_count)
+            printf("metadata_reads_by_kind fmask=%lld cmask=%lld htile=%lld unknown=%lld\n", result.render.metadata.fmask_texture_read_count, result.render.metadata.cmask_texture_read_count, result.render.metadata.htile_texture_read_count, result.render.metadata.unknown_metadata_read_count)
+            printf("metadata_actions null=%lld sample=%lld last_read_addr=0x%llx last_read_kind=%lld\n", result.render.metadata.null_metadata_action_count, result.render.metadata.sample_metadata_action_count, result.render.metadata.last_metadata_read_addr, result.render.metadata.last_metadata_read_kind)
+            printf("metadata_hits last_fmask=%lld last_cmask=%lld last_htile=%lld fmask_cmask_aliases=%lld\n", result.render.metadata.metadata_read_hits_last_fmask_count, result.render.metadata.metadata_read_hits_last_cmask_count, result.render.metadata.metadata_read_hits_last_htile_count, result.render.metadata.fmask_cmask_alias_count)
             printf("fmask_metadata class=%s suspicious=%d reason=%s\n", metadata_class.label, 1 if metadata_class.suspicious else 0, metadata_class.reason)
             printf("fmask_risk score=%lld level=%s avoid_long_run=%d recommended_profile=%s reason=%s\n", risk.score, risk.label, 1 if risk.avoid_long_run else 0, risk.recommended_profile.name, risk.reason)
 
@@ -1022,22 +1061,22 @@ def ufc_trace_print_comparison(baseline: TraceResult, experiment: TraceResult) -
             printf("comparison baseline=%s experiment=%s\n", baseline.run.profile.name, experiment.run.profile.name)
             printf("comparison_risk baseline_score=%lld experiment_score=%lld delta=%lld baseline_level=%s experiment_level=%s\n", baseline_risk.score, experiment_risk.score, experiment_risk.score - baseline_risk.score, baseline_risk.label, experiment_risk.label)
             printf("comparison_metadata_class baseline=%s experiment=%s\n", baseline_metadata.label, experiment_metadata.label)
-            printf("comparison_aliases baseline_fmask_cmask=%lld experiment_fmask_cmask=%lld delta=%lld\n", baseline.render.fmask_cmask_alias_count, experiment.render.fmask_cmask_alias_count, experiment.render.fmask_cmask_alias_count - baseline.render.fmask_cmask_alias_count)
-            printf("comparison_metadata_reads baseline_fmask=%lld experiment_fmask=%lld baseline_null_actions=%lld experiment_null_actions=%lld\n", baseline.render.fmask_texture_read_count, experiment.render.fmask_texture_read_count, baseline.render.null_metadata_action_count, experiment.render.null_metadata_action_count)
-            printf("comparison_videoout baseline_stage=%lld experiment_stage=%lld baseline_render_pass=%lld experiment_render_pass=%lld\n", baseline.render.last_videoout_stage, experiment.render.last_videoout_stage, baseline.render.last_render_pass, experiment.render.last_render_pass)
-            printf("comparison_screenshots baseline_count=%lld experiment_count=%lld baseline_dark=%lld experiment_dark=%lld baseline_min_avg_luma_x100=%lld experiment_min_avg_luma_x100=%lld baseline_last_avg_luma_x100=%lld experiment_last_avg_luma_x100=%lld\n", baseline.render.screenshot_count, experiment.render.screenshot_count, baseline.render.dark_screenshot_count, experiment.render.dark_screenshot_count, baseline.render.min_screenshot_avg_luma_x100, experiment.render.min_screenshot_avg_luma_x100, baseline.render.last_screenshot_avg_luma_x100, experiment.render.last_screenshot_avg_luma_x100)
-            printf("comparison_black_watchdog baseline_black=%lld experiment_black=%lld baseline_upstream_guest_black=%lld experiment_upstream_guest_black=%lld baseline_vulkan_black_guest_nonblack=%lld experiment_vulkan_black_guest_nonblack=%lld\n", baseline.render.black_watchdog_black_count, experiment.render.black_watchdog_black_count, baseline.render.black_watchdog_upstream_guest_black_count, experiment.render.black_watchdog_upstream_guest_black_count, baseline.render.black_watchdog_vulkan_black_guest_nonblack_count, experiment.render.black_watchdog_vulkan_black_guest_nonblack_count)
-            if experiment.render.dark_screenshot_count > baseline.render.dark_screenshot_count:
+            printf("comparison_aliases baseline_fmask_cmask=%lld experiment_fmask_cmask=%lld delta=%lld\n", baseline.render.metadata.fmask_cmask_alias_count, experiment.render.metadata.fmask_cmask_alias_count, experiment.render.metadata.fmask_cmask_alias_count - baseline.render.metadata.fmask_cmask_alias_count)
+            printf("comparison_metadata_reads baseline_fmask=%lld experiment_fmask=%lld baseline_null_actions=%lld experiment_null_actions=%lld\n", baseline.render.metadata.fmask_texture_read_count, experiment.render.metadata.fmask_texture_read_count, baseline.render.metadata.null_metadata_action_count, experiment.render.metadata.null_metadata_action_count)
+            printf("comparison_videoout baseline_stage=%lld experiment_stage=%lld baseline_render_pass=%lld experiment_render_pass=%lld\n", baseline.render.passes.last_videoout_stage, experiment.render.passes.last_videoout_stage, baseline.render.passes.last_render_pass, experiment.render.passes.last_render_pass)
+            printf("comparison_screenshots baseline_count=%lld experiment_count=%lld baseline_dark=%lld experiment_dark=%lld baseline_min_avg_luma_x100=%lld experiment_min_avg_luma_x100=%lld baseline_last_avg_luma_x100=%lld experiment_last_avg_luma_x100=%lld\n", baseline.render.screenshots.screenshot_count, experiment.render.screenshots.screenshot_count, baseline.render.screenshots.dark_screenshot_count, experiment.render.screenshots.dark_screenshot_count, baseline.render.screenshots.min_screenshot_avg_luma_x100, experiment.render.screenshots.min_screenshot_avg_luma_x100, baseline.render.screenshots.last_screenshot_avg_luma_x100, experiment.render.screenshots.last_screenshot_avg_luma_x100)
+            printf("comparison_black_watchdog baseline_black=%lld experiment_black=%lld baseline_upstream_guest_black=%lld experiment_upstream_guest_black=%lld baseline_vulkan_black_guest_nonblack=%lld experiment_vulkan_black_guest_nonblack=%lld\n", baseline.render.watchdog.black_watchdog_black_count, experiment.render.watchdog.black_watchdog_black_count, baseline.render.watchdog.black_watchdog_upstream_guest_black_count, experiment.render.watchdog.black_watchdog_upstream_guest_black_count, baseline.render.watchdog.black_watchdog_vulkan_black_guest_nonblack_count, experiment.render.watchdog.black_watchdog_vulkan_black_guest_nonblack_count)
+            if experiment.render.screenshots.dark_screenshot_count > baseline.render.screenshots.dark_screenshot_count:
                 printf("comparison_visual status=worse reason=experiment_added_dark_screenshots\n")
             else:
-                if experiment.render.dark_screenshot_count < baseline.render.dark_screenshot_count:
+                if experiment.render.screenshots.dark_screenshot_count < baseline.render.screenshots.dark_screenshot_count:
                     printf("comparison_visual status=improved reason=experiment_reduced_dark_screenshots\n")
                 else:
-                    if experiment.render.dark_screenshot_count > 0:
+                    if experiment.render.screenshots.dark_screenshot_count > 0:
                         printf("comparison_visual status=still-dark reason=both_profiles_have_dark_screenshots\n")
                     else:
                         printf("comparison_visual status=clear reason=no_dark_screenshots_in_compared_window\n")
-            if baseline.render.render_target_count == 0 or experiment.render.render_target_count == 0:
+            if baseline.render.passes.render_target_count == 0 or experiment.render.passes.render_target_count == 0:
                 printf("comparison_conclusion status=inconclusive reason=missing_render_target_coverage\n")
             else:
                 if experiment_risk.level == fmask_risk_high() and experiment_metadata.suspicious:

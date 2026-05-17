@@ -89,6 +89,22 @@ static bool IsCompositorZeroLayerEnabled() {
     return enabled;
 }
 
+static bool IsForceVideoOutStorageColorEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_FORCE_VIDEOOUT_STORAGE_COLOR");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsForceVideoOutSourceColorsEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_FORCE_VIDEOOUT_SOURCE_COLORS");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 static const char* MetaTypeName(VideoCore::TextureCache::MetaDataInfo::Type type) {
     switch (type) {
     case VideoCore::TextureCache::MetaDataInfo::Type::CMask:
@@ -488,9 +504,12 @@ void Rasterizer::DispatchDirect() {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    ForceVideoOutSourceColorsIfRequested(cmdbuf, cs);
     RecordGpuCommandDiagnostic("dispatch x=%u y=%u z=%u", cs_program.dim_x, cs_program.dim_y,
                                cs_program.dim_z);
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
+    ForceVideoOutStorageColorIfRequested(cmdbuf, cs, cs_program.dim_x, cs_program.dim_y,
+                                         cs_program.dim_z);
 
     ResetBindings();
 }
@@ -517,7 +536,10 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+    const auto& cs = pipeline->GetStage(Shader::LogicalStage::Compute);
+    ForceVideoOutSourceColorsIfRequested(cmdbuf, cs);
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
+    ForceVideoOutStorageColorIfRequested(cmdbuf, cs, 0, 0, 0);
 
     ResetBindings();
 }
@@ -554,6 +576,8 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     buffer_barriers.clear();
     buffer_infos.clear();
     image_infos.clear();
+    videoout_storage_probe.reset();
+    videoout_source_probes.clear();
 
     bool uses_dma = false;
 
@@ -1174,11 +1198,33 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                        image.info.resources.levels, image.info.resources.layers, view_base_level,
                        view_levels, view_end_level, view_base_layer, view_layers, view_end_layer);
             if (is_videoout_storage) {
+                videoout_storage_probe = VideoOutStorageProbe{
+                    .image = image.GetImage(),
+                    .guest_address = image.info.guest_address,
+                    .guest_size = image.info.guest_size,
+                    .image_id = image_id.index,
+                    .width = image.info.size.width,
+                    .height = image.info.size.height,
+                    .format = image.info.pixel_format,
+                };
                 Common::Trace::RecordVideoOutWrite(
                     "BindStorageVideoOut", image.info.guest_address, image.info.guest_size,
                     stage.pgm_hash,
                     (static_cast<u64>(static_cast<u32>(stage.stage)) << 32) |
                         trace_image_binding_idx);
+            }
+            if (trace_stage_has_videoout_storage && !is_storage && !image.info.props.is_depth &&
+                videoout_source_probes.size() < videoout_source_probes.capacity()) {
+                videoout_source_probes.emplace_back(VideoOutSourceProbe{
+                    .image = image.GetImage(),
+                    .guest_address = image.info.guest_address,
+                    .guest_size = image.info.guest_size,
+                    .image_id = image_id.index,
+                    .binding_index = trace_image_binding_idx,
+                    .width = image.info.size.width,
+                    .height = image.info.size.height,
+                    .format = image.info.pixel_format,
+                });
             }
 
             if (trace_image_bindings && (trace_stage_has_videoout_storage || is_storage)) {
@@ -1289,6 +1335,134 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         set_write.descriptorType = vk::DescriptorType::eSampler;
         set_write.pImageInfo = &image_infos.back();
     }
+}
+
+void Rasterizer::ForceVideoOutSourceColorsIfRequested(vk::CommandBuffer cmdbuf,
+                                                      const Shader::Info& stage) {
+    if (!IsForceVideoOutSourceColorsEnabled() || videoout_source_probes.empty()) {
+        return;
+    }
+
+    static std::atomic_bool logged{};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        LOG_WARNING(Render_Vulkan,
+                    "SHADPS4_FORCE_VIDEOOUT_SOURCE_COLORS=1: clearing VideoOut compute source "
+                    "textures before dispatch");
+    }
+
+    constexpr vk::ImageSubresourceRange range{
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .baseMipLevel = 0,
+        .levelCount = 1,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    for (const auto& probe : videoout_source_probes) {
+        const vk::ImageMemoryBarrier read_to_clear{
+            .srcAccessMask = vk::AccessFlagBits::eShaderRead,
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = probe.image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, read_to_clear);
+
+        const vk::ClearColorValue color =
+            probe.binding_index == 0
+                ? vk::ClearColorValue{std::array<float, 4>{1.0f, 0.0f, 0.0f, 1.0f}}
+                : probe.binding_index == 1
+                      ? vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 1.0f, 1.0f}}
+                      : vk::ClearColorValue{std::array<float, 4>{1.0f, 1.0f, 0.0f, 1.0f}};
+        cmdbuf.clearColorImage(probe.image, vk::ImageLayout::eTransferDstOptimal, color, range);
+
+        const vk::ImageMemoryBarrier clear_to_read{
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = probe.image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eComputeShader,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, clear_to_read);
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_RENDER videoout_source_force_color pgm={:#x} stage={} binding={} "
+                 "image_id={} guest_addr={:#x} guest_size={} size={}x{} format={}",
+                 stage.pgm_hash, stage.stage, probe.binding_index, probe.image_id,
+                 probe.guest_address, probe.guest_size, probe.width, probe.height,
+                 vk::to_string(probe.format));
+    }
+}
+
+void Rasterizer::ForceVideoOutStorageColorIfRequested(vk::CommandBuffer cmdbuf,
+                                                      const Shader::Info& stage, u32 dim_x,
+                                                      u32 dim_y, u32 dim_z) {
+    if (!IsForceVideoOutStorageColorEnabled() || !videoout_storage_probe.has_value()) {
+        return;
+    }
+
+    const auto probe = *videoout_storage_probe;
+    static std::atomic_bool logged{};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        LOG_WARNING(Render_Vulkan,
+                    "SHADPS4_FORCE_VIDEOOUT_STORAGE_COLOR=1: clearing VideoOut storage image "
+                    "after compute dispatch to diagnostic green");
+    }
+    LOG_INFO(Render_Vulkan,
+             "TRACE_RENDER videoout_storage_force_color pgm={:#x} stage={} dispatch={}x{}x{} "
+             "image_id={} guest_addr={:#x} guest_size={} size={}x{} format={}",
+             stage.pgm_hash, stage.stage, dim_x, dim_y, dim_z, probe.image_id,
+             probe.guest_address, probe.guest_size, probe.width, probe.height,
+             vk::to_string(probe.format));
+
+    constexpr vk::ImageSubresourceRange range{
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .baseMipLevel = 0,
+        .levelCount = 1,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    const vk::ImageMemoryBarrier shader_to_clear{
+        .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+        .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = probe.image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                           vk::PipelineStageFlagBits::eTransfer,
+                           vk::DependencyFlagBits::eByRegion, {}, {}, shader_to_clear);
+
+    const vk::ClearColorValue color{std::array<float, 4>{0.0f, 1.0f, 0.0f, 1.0f}};
+    cmdbuf.clearColorImage(probe.image, vk::ImageLayout::eGeneral, color, range);
+
+    const vk::ImageMemoryBarrier clear_to_shader{
+        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+        .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = probe.image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                           vk::PipelineStageFlagBits::eAllCommands,
+                           vk::DependencyFlagBits::eByRegion, {}, {}, clear_to_shader);
+    Common::Trace::RecordVideoOutWrite("ForceVideoOutStorageColor", probe.guest_address,
+                                       probe.guest_size, stage.pgm_hash,
+                                       (static_cast<u64>(dim_x) << 32) | dim_y);
 }
 
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {

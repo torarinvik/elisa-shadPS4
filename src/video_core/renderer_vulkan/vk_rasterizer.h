@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -113,6 +115,9 @@ private:
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
     bool IsComputeImageClear(const Pipeline* pipeline);
+    void ForceVideoOutSourceColorsIfRequested(vk::CommandBuffer cmdbuf, const Shader::Info& stage);
+    void ForceVideoOutStorageColorIfRequested(vk::CommandBuffer cmdbuf, const Shader::Info& stage,
+                                              u32 dim_x, u32 dim_y, u32 dim_z);
 
 private:
     friend class VideoCore::BufferCache;
@@ -144,6 +149,27 @@ private:
     boost::container::static_vector<BufferBindingInfo, Shader::NUM_BUFFERS> buffer_bindings;
     using ImageBindingInfo = std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc>;
     boost::container::static_vector<ImageBindingInfo, Shader::NUM_IMAGES> image_bindings;
+    struct VideoOutStorageProbe {
+        vk::Image image{};
+        VAddr guest_address{};
+        u64 guest_size{};
+        u32 image_id{};
+        u32 width{};
+        u32 height{};
+        vk::Format format{};
+    };
+    std::optional<VideoOutStorageProbe> videoout_storage_probe;
+    struct VideoOutSourceProbe {
+        vk::Image image{};
+        VAddr guest_address{};
+        u64 guest_size{};
+        u32 image_id{};
+        u32 binding_index{};
+        u32 width{};
+        u32 height{};
+        vk::Format format{};
+    };
+    boost::container::static_vector<VideoOutSourceProbe, 8> videoout_source_probes;
     bool fault_process_pending{};
     bool attachment_feedback_loop{};
 };

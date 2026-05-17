@@ -102,6 +102,8 @@ static void shadps4_elisa_apply_trace_env(int null_fmask_reads, int fmask_decomp
     unsetenv("SHADPS4_COMPOSITOR_NULL_LAYER");
     unsetenv("SHADPS4_COMPOSITOR_ZERO_LAYER");
     unsetenv("SHADPS4_VIDEOOUT_UNORM");
+    unsetenv("SHADPS4_FORCE_VIDEOOUT_STORAGE_COLOR");
+    unsetenv("SHADPS4_FORCE_VIDEOOUT_SOURCE_COLORS");
 
     if (null_fmask_reads) {
         setenv("SHADPS4_NULL_FMASK_TEXTURE_READS", "1", 1);
@@ -183,6 +185,14 @@ static void shadps4_elisa_profile_flags(const char* profile, int* null_fmask_rea
 
 static int shadps4_elisa_is_black_watchdog_profile(const char* profile) {
     return profile != NULL && strcmp(profile, "black-watchdog-strict") == 0;
+}
+
+static int shadps4_elisa_is_videoout_storage_force_color_profile(const char* profile) {
+    return profile != NULL && strcmp(profile, "videoout-storage-force-color") == 0;
+}
+
+static int shadps4_elisa_is_videoout_source_force_colors_profile(const char* profile) {
+    return profile != NULL && strcmp(profile, "videoout-source-force-colors") == 0;
 }
 
 static uint64_t shadps4_elisa_monotonic_ms(void) {
@@ -290,6 +300,16 @@ int shadps4_elisa_start_ufc_trace_flags(const char* root_dir, const char* profil
             setenv("SHADPS4_BLACK_WATCHDOG_ARMED", "1", 1);
             setenv("SHADPS4_BLACK_WATCHDOG_CONSECUTIVE_FRAMES", "2", 1);
             setenv("SHADPS4_TRACE_VIDEO_OUT_EVERY", "1", 1);
+        }
+        if (shadps4_elisa_is_videoout_storage_force_color_profile(chosen_profile)) {
+            setenv("SHADPS4_FORCE_VIDEOOUT_STORAGE_COLOR", "1", 1);
+            setenv("SHADPS4_TRACE_VIDEO_OUT_EVERY", "1", 1);
+            setenv("SHADPS4_TRACE_SCREENSHOT_INTERVAL_MS", "1500", 1);
+        }
+        if (shadps4_elisa_is_videoout_source_force_colors_profile(chosen_profile)) {
+            setenv("SHADPS4_FORCE_VIDEOOUT_SOURCE_COLORS", "1", 1);
+            setenv("SHADPS4_TRACE_VIDEO_OUT_EVERY", "1", 1);
+            setenv("SHADPS4_TRACE_SCREENSHOT_INTERVAL_MS", "1500", 1);
         }
         shadps4_elisa_warn_stale_build_cache();
         const char* binary_path = shadps4_elisa_select_binary();
@@ -453,6 +473,8 @@ static int shadps4_elisa_keep_trace_line(const char* line, size_t line_len) {
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER metadata_texture_read") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER fmask_decompress") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER fmask_decompress_missing_mrt1") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER videoout_storage_force_color") ||
+        shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER videoout_source_force_color") ||
         shadps4_elisa_line_contains(line, line_len, "is_videoout_storage=true") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER image_binding_null") ||
         shadps4_elisa_line_contains(line, line_len, "TRACE_RENDER compositor_null_layer");
