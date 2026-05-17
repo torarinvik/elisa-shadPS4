@@ -146,10 +146,11 @@ When `SHADPS4_ENABLE_ELISA_PORTS=ON`, the main shadPS4 executable links the laun
 and the Elisa main archive. `src/main.cpp` becomes a small platform trampoline: on Windows it still sets
 UTF-8 console output, then calls `shadps4_elisa_main(argc, argv)`. Elisa owns the root branch:
 parse launch intent, handle help/no-args/error exits, and dispatch valid launches through a narrow C++
-executor bridge. The C++ CLI11 parser remains the fallback for non-Elisa builds, no-argument
-help/message-box behavior, help text printing, and ABI failures. Elisa owns launch-time directory
-validation for `--override-root`, `--add-game-folder`, and `--set-addon-folder` through a narrow native
-`FS.Read` predicate. To compare both parsers without changing runtime behavior, enable shadow mode:
+executor bridge. The C++ CLI11 parser remains the fallback for non-Elisa builds and ABI failures.
+Elisa owns launch-time directory validation for `--override-root`, `--add-game-folder`, and
+`--set-addon-folder` through a narrow native `FS.Read` predicate. The Elisa main bridge now also owns
+the no-argument message-box/help path without re-entering CLI11. To compare both parsers without
+changing runtime behavior, enable shadow mode:
 
 ```sh
 SHADPS4_ELISA_SHADOW_LAUNCH_INTENT=1 ./build-elisa/shadps4 --game CUSA00264 --fullscreen true

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "launch_cli.h"
 #include "launch_pipeline.h"
 
 #include <cstring>
@@ -11,12 +10,14 @@
 #include <utility>
 #include <vector>
 
+#include <SDL3/SDL_messagebox.h>
 #include <core/emulator_settings.h>
 
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "core/file_sys/fs.h"
 #include "elisa/native/shadps4_elisa_launch_intent.h"
+#include "launch_intent_shadow.h"
 
 namespace {
 
@@ -24,43 +25,51 @@ const char* ElisaString(uint8_t* value) {
     return value != nullptr ? reinterpret_cast<const char*>(value) : "";
 }
 
+constexpr const char* ElisaHelpText =
+    R"(shadPS4 Emulator CLI
+Usage: shadps4 [OPTIONS] [game path or ID] [-- guest args...]
+
+Options:
+  -h,--help                   Print this help text
+  -g,--game <path|ID>         Game path or ID
+  -p,--patch <path>           Patch file to apply
+  -i,--ignore-game-patch      Disable automatic loading of game patches
+  -b,--big-picture            Start in Big Picture Mode
+  -f,--fullscreen <true|false>
+                               Fullscreen mode
+  --override-root <dir>       Override root directory
+  --wait-for-debugger         Wait for debugger before running the game
+  --wait-for-pid <pid>        Wait for an existing process before launch
+  --show-fps                  Show FPS counter
+  --config-clean              Use clean config mode
+  --config-global             Use global config mode
+  --log-append                Append to the log file
+  --add-game-folder <dir>     Add a game install directory
+  --set-addon-folder <dir>    Set the addon install directory
+)";
+
+void PrintElisaHelp() {
+    std::cout << ElisaHelpText;
+}
+
 } // namespace
 
 extern "C" intptr_t shadps4_elisa_main_no_args(int64_t argc, uint8_t** argv) {
-    if (argc < 0) {
-        return 1;
-    }
-    std::vector<char*> cpp_argv(static_cast<size_t>(argc));
-    for (int64_t index = 0; index < argc; ++index) {
-        cpp_argv[static_cast<size_t>(index)] =
-            reinterpret_cast<char*>(argv[static_cast<size_t>(index)]);
-    }
-
-    const auto parsed = LaunchCli::Parse(static_cast<int>(argc), cpp_argv.data());
-    return parsed.should_exit ? parsed.exit_code : 1;
+    (void)argc;
+    (void)argv;
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "shadPS4",
+                             "This is a CLI application. Please use the QTLauncher for a GUI:\n"
+                             "https://github.com/shadps4-emu/shadps4-qtlauncher/releases",
+                             nullptr);
+    PrintElisaHelp();
+    return -1;
 }
 
 extern "C" intptr_t shadps4_elisa_main_help(int64_t argc, uint8_t** argv) {
-    if (argc < 0) {
-        return 1;
-    }
-
-    std::vector<char*> cpp_argv(static_cast<size_t>(argc));
-    for (int64_t index = 0; index < argc; ++index) {
-        cpp_argv[static_cast<size_t>(index)] =
-            reinterpret_cast<char*>(argv[static_cast<size_t>(index)]);
-    }
-
-    const char* old_disable = std::getenv("SHADPS4_DISABLE_ELISA_LAUNCH_INTENT");
-    const std::string old_value = old_disable != nullptr ? old_disable : "";
-    setenv("SHADPS4_DISABLE_ELISA_LAUNCH_INTENT", "1", 1);
-    const auto parsed = LaunchCli::Parse(static_cast<int>(argc), cpp_argv.data());
-    if (old_disable != nullptr) {
-        setenv("SHADPS4_DISABLE_ELISA_LAUNCH_INTENT", old_value.c_str(), 1);
-    } else {
-        unsetenv("SHADPS4_DISABLE_ELISA_LAUNCH_INTENT");
-    }
-    return parsed.should_exit ? parsed.exit_code : 1;
+    (void)argc;
+    (void)argv;
+    PrintElisaHelp();
+    return 0;
 }
 
 extern "C" intptr_t shadps4_elisa_main_report_error(ShadLaunchIntentCABI* intent) {
