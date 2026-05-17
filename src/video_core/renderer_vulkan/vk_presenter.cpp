@@ -1101,6 +1101,8 @@ static vk::Format GetFrameViewFormat(const Libraries::VideoOut::PixelFormat form
     case Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb:
     case Libraries::VideoOut::PixelFormat::A2R10G10B10Bt2020Pq:
         return vk::Format::eA2R10G10B10UnormPack32;
+    case Libraries::VideoOut::PixelFormat::A16R16G16B16Float:
+        return vk::Format::eR16G16B16A16Sfloat;
     default:
         break;
     }

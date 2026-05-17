@@ -40,6 +40,8 @@ static vk::Format ConvertPixelFormat(const VideoOutFormat format) {
     case VideoOutFormat::A2R10G10B10Srgb:
     case VideoOutFormat::A2R10G10B10Bt2020Pq:
         return vk::Format::eA2B10G10R10UnormPack32;
+    case VideoOutFormat::A16R16G16B16Float:
+        return vk::Format::eR16G16B16A16Sfloat;
     default:
         break;
     }
@@ -69,7 +71,6 @@ ImageInfo::ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group,
     pitch = attrib.tiling_mode == TilingMode::Linear ? registered_pitch
                                                      : Common::AlignUp(registered_pitch, 128u);
     num_bits = attrib.pixel_format != VideoOutFormat::A16R16G16B16Float ? 32 : 64;
-    ASSERT(num_bits == 32);
 
     guest_address = cpu_address;
     UpdateSize();
