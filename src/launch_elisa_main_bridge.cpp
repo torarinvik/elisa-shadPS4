@@ -4,10 +4,10 @@
 #include "launch_pipeline.h"
 
 #include <cstring>
-#include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <SDL3/SDL_messagebox.h>
@@ -17,7 +17,7 @@
 #include "common/memory_patcher.h"
 #include "core/file_sys/fs.h"
 #include "elisa/native/shadps4_elisa_launch_intent.h"
-#include "launch_intent_shadow.h"
+#include "imgui/big_picture/big_picture.h"
 
 namespace {
 
@@ -96,24 +96,22 @@ extern "C" intptr_t shadps4_elisa_pipeline_initialize_runtime_settings() {
 }
 
 extern "C" intptr_t shadps4_elisa_pipeline_big_picture(uint8_t* executable_name) {
-    LaunchPipeline::HandleUtilityCommand(true, reinterpret_cast<char*>(executable_name), std::nullopt,
-                                         std::nullopt);
+    BigPictureMode::Launch(reinterpret_cast<char*>(executable_name));
     return 1;
 }
 
 extern "C" intptr_t shadps4_elisa_pipeline_add_game_folder(uint8_t* path) {
-    return LaunchPipeline::HandleUtilityCommand(false, nullptr,
-                                                std::filesystem::path(ElisaString(path)),
-                                                std::nullopt)
-               ? 1
-               : 0;
+    EmulatorSettings.AddGameInstallDir(std::filesystem::path(ElisaString(path)));
+    EmulatorSettings.Save();
+    std::cout << "Game folder successfully saved.\n";
+    return 1;
 }
 
 extern "C" intptr_t shadps4_elisa_pipeline_set_addon_folder(uint8_t* path) {
-    return LaunchPipeline::HandleUtilityCommand(false, nullptr, std::nullopt,
-                                                std::filesystem::path(ElisaString(path)))
-               ? 1
-               : 0;
+    EmulatorSettings.SetAddonInstallDir(std::filesystem::path(ElisaString(path)));
+    EmulatorSettings.Save();
+    std::cout << "Addon folder successfully saved.\n";
+    return 1;
 }
 
 extern "C" intptr_t shadps4_elisa_pipeline_set_patch_file(uint8_t* path) {
