@@ -661,6 +661,10 @@ void EmitContext::DefineOutputs() {
         if (info.stores.Get(IR::Attribute::Depth)) {
             frag_depth = DefineVariable(F32[1], spv::BuiltIn::FragDepth, spv::StorageClass::Output);
         }
+        if (info.stores.Get(IR::Attribute::StencilRef) && profile.supports_shader_stencil_export) {
+            frag_stencil_ref = DefineVariable(U32[1], spv::BuiltIn::FragStencilRefEXT,
+                                              spv::StorageClass::Output);
+        }
         if (info.stores.Get(IR::Attribute::SampleMask)) {
             sample_mask = DefineVariable(TypeArray(U32[1], u32_one_value), spv::BuiltIn::SampleMask,
                                          spv::StorageClass::Output);

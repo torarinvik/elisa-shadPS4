@@ -29,6 +29,12 @@ static bool ShouldAbortCopyBufferImageAlias() {
     return IsStrictRenderValidationEnabled() && enabled;
 }
 
+static bool ShouldAbortTexelImageSubresourceAlias() {
+    static const bool enabled =
+        Common::Trace::EnvEnabled("SHADPS4_STRICT_TEXEL_IMAGE_SUBRESOURCE_ALIAS_ABORT");
+    return IsStrictRenderValidationEnabled() && enabled;
+}
+
 static constexpr size_t DataShareBufferSize = 64_KB;
 static constexpr size_t StagingBufferSize = 512_MB;
 static constexpr size_t DownloadBufferSize = 32_MB;
@@ -781,51 +787,80 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 }
 
 bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, VAddr device_addr, u32 size) {
-    const ImageId image_id = texture_cache.FindImageFromRange(device_addr, size);
-    if (!image_id) {
-        return false;
-    }
-    Image& image = texture_cache.GetImage(image_id);
-    ASSERT_MSG(device_addr == image.info.guest_address,
-               "Texel buffer aliases image subresources {:x} : {:x}", device_addr,
-               image.info.guest_address);
-    const u32 buf_offset = buffer.Offset(image.info.guest_address);
-    boost::container::small_vector<vk::BufferImageCopy, 8> buffer_copies;
-    u32 copy_size = 0;
-    for (u32 mip = 0; mip < image.info.resources.levels; mip++) {
-        const auto& mip_info = image.info.mips_layout[mip];
-        const u32 width = std::max(image.info.size.width >> mip, 1u);
-        const u32 height = std::max(image.info.size.height >> mip, 1u);
-        const u32 depth = std::max(image.info.size.depth >> mip, 1u);
-        if (buf_offset + mip_info.offset + mip_info.size > buffer.SizeBytes()) {
-            break;
+    bool synchronized = false;
+    texture_cache.ForEachImageInRegion(device_addr, size, [&](ImageId image_id, Image& image) {
+        if (!image.SafeToDownload()) {
+            return;
         }
-        buffer_copies.push_back(vk::BufferImageCopy{
-            .bufferOffset = mip_info.offset,
-            .bufferRowLength = mip_info.pitch,
-            .bufferImageHeight = mip_info.height,
-            .imageSubresource{
-                .aspectMask = image.aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
-                .mipLevel = mip,
-                .baseArrayLayer = 0,
-                .layerCount = image.info.resources.layers,
-            },
-            .imageOffset = {0, 0, 0},
-            .imageExtent = {width, height, depth},
-        });
-        copy_size += mip_info.size;
-    }
-    if (copy_size == 0) {
-        ASSERT_MSG(!IsStrictRenderValidationEnabled(),
-                   "Strict render validation: no image copy regions for buffer synchronization "
-                   "device_addr={:#x} size={} image_id={} image_addr={:#x} image_size={} "
-                   "buffer_addr={:#x} buffer_size={}",
-                   device_addr, size, image_id.index, image.info.guest_address,
-                   image.info.guest_size, buffer.CpuAddr(), buffer.SizeBytes());
+        if (!buffer.IsInBounds(image.info.guest_address, image.info.guest_size)) {
+            LOG_WARNING(Render_Vulkan,
+                        "Texel buffer overlaps image outside buffer bounds; skipping image->buffer "
+                        "sync device_addr={:#x} size={} image_id={} image_addr={:#x} "
+                        "image_size={} buffer_addr={:#x} buffer_size={}",
+                        device_addr, size, image_id.index, image.info.guest_address,
+                        image.info.guest_size, buffer.CpuAddr(), buffer.SizeBytes());
+            ASSERT_MSG(!ShouldAbortTexelImageSubresourceAlias(),
+                       "Strict render validation: texel buffer image is outside buffer bounds "
+                       "device_addr={:#x} image_addr={:#x}",
+                       device_addr, image.info.guest_address);
+            return;
+        }
+        if (device_addr != image.info.guest_address || size != image.info.guest_size) {
+            LOG_WARNING(Render_Vulkan,
+                        "Texel buffer aliases image subresources; syncing whole overlapped image "
+                        "device_addr={:#x} size={} image_id={} image_addr={:#x} image_size={} "
+                        "buffer_addr={:#x} buffer_size={}",
+                        device_addr, size, image_id.index, image.info.guest_address,
+                        image.info.guest_size, buffer.CpuAddr(), buffer.SizeBytes());
+            ASSERT_MSG(!ShouldAbortTexelImageSubresourceAlias(),
+                       "Strict render validation: texel buffer aliases image subresources "
+                       "device_addr={:#x} image_addr={:#x}",
+                       device_addr, image.info.guest_address);
+        }
+        const u32 buf_offset = buffer.Offset(image.info.guest_address);
+        boost::container::small_vector<vk::BufferImageCopy, 8> buffer_copies;
+        u32 copy_size = 0;
+        for (u32 mip = 0; mip < image.info.resources.levels; mip++) {
+            const auto& mip_info = image.info.mips_layout[mip];
+            const u32 width = std::max(image.info.size.width >> mip, 1u);
+            const u32 height = std::max(image.info.size.height >> mip, 1u);
+            const u32 depth = std::max(image.info.size.depth >> mip, 1u);
+            if (buf_offset + mip_info.offset + mip_info.size > buffer.SizeBytes()) {
+                break;
+            }
+            buffer_copies.push_back(vk::BufferImageCopy{
+                .bufferOffset = mip_info.offset,
+                .bufferRowLength = mip_info.pitch,
+                .bufferImageHeight = mip_info.height,
+                .imageSubresource{
+                    .aspectMask = image.aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
+                    .mipLevel = mip,
+                    .baseArrayLayer = 0,
+                    .layerCount = image.info.resources.layers,
+                },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {width, height, depth},
+            });
+            copy_size += mip_info.size;
+        }
+        if (copy_size == 0) {
+            ASSERT_MSG(!IsStrictRenderValidationEnabled(),
+                       "Strict render validation: no image copy regions for buffer synchronization "
+                       "device_addr={:#x} size={} image_id={} image_addr={:#x} image_size={} "
+                       "buffer_addr={:#x} buffer_size={}",
+                       device_addr, size, image_id.index, image.info.guest_address,
+                       image.info.guest_size, buffer.CpuAddr(), buffer.SizeBytes());
+            return;
+        }
+        auto& tile_manager = texture_cache.GetTileManager();
+        tile_manager.TileImage(image, buffer_copies, buffer.Handle(), buf_offset, copy_size);
+        synchronized = true;
+    });
+
+    if (!synchronized) {
         return false;
     }
-    auto& tile_manager = texture_cache.GetTileManager();
-    tile_manager.TileImage(image, buffer_copies, buffer.Handle(), buf_offset, copy_size);
+
     return true;
 }
 

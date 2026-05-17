@@ -1791,6 +1791,9 @@ Frame* Presenter::GetRenderFrame() {
     // Wait for the presentation to be finished so all frame resources are free
     u32 timeout_count = 0;
     while (wait() != vk::Result::eSuccess) {
+        if (result != vk::Result::eTimeout) {
+            LogGpuWaitFailure("get_render_frame_present_done", result);
+        }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
         ASSERT_MSG(!IsStrictRenderValidationEnabled() || result != vk::Result::eTimeout,
