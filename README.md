@@ -28,6 +28,33 @@ emulator core into Elisa-core, so the codebase may temporarily contain upstream
 C++ structure, compatibility wrappers, incomplete integrations, and behavior that
 differs from both Elisa-core and upstream shadPS4.
 
+## macOS Compatibility Snapshot
+
+Current compatibility testing is focused on macOS, especially Apple Silicon Macs
+running the inherited Vulkan renderer through MoltenVK. Unless a row explicitly
+says otherwise, the results below have **not** been validated on Linux or
+Windows.
+
+This is not a polished compatibility list yet; it is a living dogfood log for
+the Elisa-core port. The fuller, messier test record lives in
+[GamesChecklist.md](GamesChecklist.md). These are the titles that currently
+stand out as working or meaningfully playable in our local macOS testing:
+
+| Game | Title ID | Current macOS result | What changed here |
+|---|---|---|---|
+| The Amazing Spider-Man 2 | CUSA00394 | Reaches the title screen and manual playtesting showed it advances and appears to work fine. | Fixed VideoOut handling for `A16R16G16B16Float` by mapping it to `R16G16B16A16Sfloat` and allowing 64-bpp presentation surfaces. |
+| Tokyo Twilight Ghost Hunters Daybreak: Special Gigs | CUSA06045 | Boots into visual-novel scenes and appeared to work normally in the initial test. | Improved dogfood coverage and documented keyboard/controller mappings needed to advance prompts. |
+| The Witch and the Hundred Knight 2 | CUSA10135 | Appears to work fine during manual play; audio works and the earlier crash was not reproduced. | Hardened NGS2/AT9 audio metadata and waveform decoding/mixing paths that previously crashed during logo/audio loading. |
+| Katamari Damacy Reroll | CUSA24361 | Appears playable in manual testing; strict black-screen watchdog stayed nonblack. | Added safer render/watchdog testing and kept noisy metadata-read diagnostics from being mistaken for a fatal blocker. |
+| Teenage Mutant Ninja Turtles: Shredder's Revenge | CUSA30991 | Reaches startup, main menu, and gameplay; startup music works. | Fixed the flexible-memory/`sceKernelMunmap(0, ...)` quit path that previously made this title much less stable. |
+| Gigantosaurus: Dino Sports | CUSA43402 | Appears playable in manual testing, with occasional flicker. | Render watchdog confirmed it was producing real nonblack frames while Unity-style assets and shaders loaded. |
+
+Several other titles now boot further than they did before but still have known
+rendering, audio, filesystem, or HLE issues. We track those openly in
+[GamesChecklist.md](GamesChecklist.md), including the useful failures. The aim is
+not to pretend the emulator is done; the aim is to make every improvement
+visible and reproducible.
+
 If you want the official shadPS4 project, use:
 
 - Upstream repository: [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4)
