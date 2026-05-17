@@ -20,6 +20,10 @@ std::string RemoveTrailingSlashes(const std::string& path) {
     return path_sanitized;
 }
 
+static bool IsHostSidecarEntry(const std::filesystem::path& path) {
+    return Common::ToLower(path.filename().string()) == ".ds_store";
+}
+
 void MntPoints::Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
                       bool read_only) {
     std::scoped_lock lock{m_mutex};
@@ -138,8 +142,14 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
                     continue;
                 }
                 const auto part_low = Common::ToLower(part.string());
+                if (part_low == ".ds_store") {
+                    return std::optional<std::filesystem::path>({});
+                }
                 bool found_match = false;
                 for (const auto& path : std::filesystem::directory_iterator(current_path)) {
+                    if (IsHostSidecarEntry(path.path())) {
+                        continue;
+                    }
                     const auto candidate = path.path().filename();
                     const auto filename = Common::ToLower(candidate.string());
                     // Check if a filename matches in case insensitive manner.
@@ -196,6 +206,9 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
     // Pass 1: Any files that existed in the base directory, using mod/patch directory if needed.
     if (std::filesystem::exists(base_path)) {
         for (const auto& entry : std::filesystem::directory_iterator(base_path)) {
+            if (IsHostSidecarEntry(entry.path())) {
+                continue;
+            }
             const auto mod_entry_path = mod_path / entry.path().filename();
             const auto patch_entry_path = patch_path / entry.path().filename();
             if (std::filesystem::exists(mod_entry_path)) {
@@ -212,6 +225,9 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
     // Pass 2: Any files that exist only in the patch directory.
     if (std::filesystem::exists(patch_path)) {
         for (const auto& entry : std::filesystem::directory_iterator(patch_path)) {
+            if (IsHostSidecarEntry(entry.path())) {
+                continue;
+            }
             const auto base_entry_path = base_path / entry.path().filename();
             if (!std::filesystem::exists(base_entry_path)) {
                 const auto mod_entry_path = mod_path / entry.path().filename();
@@ -227,6 +243,9 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
     // Pass 3: Any files that exist only in the mod directory (confirmed this can be valid)
     if (std::filesystem::exists(mod_path)) {
         for (const auto& entry : std::filesystem::directory_iterator(mod_path)) {
+            if (IsHostSidecarEntry(entry.path())) {
+                continue;
+            }
             const auto base_entry_path = base_path / entry.path().filename();
             const auto patch_entry_path = patch_path / entry.path().filename();
             if (!std::filesystem::exists(base_entry_path) &&
